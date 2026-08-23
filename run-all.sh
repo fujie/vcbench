@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# run-all.sh — 全言語 × 全フォーマット × RUNS回 の計測を一括実行し、集計する。
+# run-all.sh — runs every language × format × RUNS and aggregates the results.
 #
-#   ./run-all.sh                    # config.sh の既定値で実行
-#   N=500 RUNS=3 ./run-all.sh       # 環境変数で上書き
-#   LANGS="node" FORMATS="sdjwt" ./run-all.sh   # 対象を絞る
-#   CPU_PIN="2" ./run-all.sh        # CPUコア2に固定して実行
+#   ./run-all.sh                    # run with the defaults from config.sh
+#   N=500 RUNS=3 ./run-all.sh       # override through environment variables
+#   LANGS="node" FORMATS="sdjwt" ./run-all.sh   # narrow down the targets
+#   CPU_PIN="2" ./run-all.sh        # pin the measurement process to CPU core 2
 set -euo pipefail
 cd "$(dirname "$0")"
 source ./config.sh
@@ -21,29 +21,29 @@ if [[ -n "$CPU_PIN" ]]; then
   echo "CPU_PIN=$CPU_PIN (taskset)"
 fi
 
-# ── 事前チェック / ビルド ────────────────────────────────────────
+# ── preflight checks / build ──────────────────────────────────────────────
 for lang in $LANGS; do
   case "$lang" in
     node)
-      command -v "$NODE_BIN" >/dev/null || { echo "ERROR: node が見つかりません"; exit 1; }
-      [[ -d node/node_modules ]] || { echo "ERROR: 先に (cd node && npm install) を実行してください"; exit 1; }
+      command -v "$NODE_BIN" >/dev/null || { echo "ERROR: node not found"; exit 1; }
+      [[ -d node/node_modules ]] || { echo "ERROR: run (cd node && npm install) first"; exit 1; }
       ;;
     go)
       if [[ ! -x "$GO_BENCH_BIN" ]]; then
-        command -v go >/dev/null || { echo "ERROR: go が見つかりません（または事前に go/vc-bench をビルドして配置）"; exit 1; }
+        command -v go >/dev/null || { echo "ERROR: go not found (or place a prebuilt go/vc-bench binary)"; exit 1; }
         echo "-- building go/vc-bench"
         (cd go && go build -o vc-bench .)
       fi
       ;;
     python)
-      command -v "$PYTHON_BIN" >/dev/null || { echo "ERROR: python3 が見つかりません"; exit 1; }
+      command -v "$PYTHON_BIN" >/dev/null || { echo "ERROR: python3 not found"; exit 1; }
       "$PYTHON_BIN" -c "import cryptography, pyld, cbor2" 2>/dev/null || {
-        echo "ERROR: 先に $PYTHON_BIN -m pip install -r python/requirements.txt を実行してください"; exit 1; }
+        echo "ERROR: run $PYTHON_BIN -m pip install -r python/requirements.txt first"; exit 1; }
       ;;
   esac
 done
 
-# ── 環境情報スナップショット ─────────────────────────────────────
+# ── environment snapshot ──────────────────────────────────────────────────
 {
   echo "date: $(date -Iseconds)"
   echo "kernel: $(uname -srmo)"
@@ -54,7 +54,7 @@ done
 } > "$RESULTS_DIR/environment.txt"
 echo "-- environment snapshot -> $RESULTS_DIR/environment.txt"
 
-# ── 計測本体 ─────────────────────────────────────────────────────
+# ── measurement ───────────────────────────────────────────────────────────
 run_one() {  # $1=lang $2=format $3=run
   local lang=$1 fmt=$2 run=$3
   local out="$RESULTS_DIR/${lang}_${fmt}_run${run}.json"
@@ -79,7 +79,7 @@ for run in $(seq 1 "$RUNS"); do
   done
 done
 
-# ── 集計 ─────────────────────────────────────────────────────────
+# ── aggregation ───────────────────────────────────────────────────────────
 echo "== aggregate"
 "$NODE_BIN" aggregate.mjs "$RESULTS_DIR" "$RESULTS_DIR/summary"
 echo "== done: $RESULTS_DIR/summary.md"

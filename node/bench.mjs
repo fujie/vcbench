@@ -1,24 +1,24 @@
 #!/usr/bin/env node
 /**
- * linux-bench Node.js engine — VCフォーマット別 署名/検証ベンチマーク
+ * linux-bench Node.js engine — signing/verification benchmarks per VC format
  *
- * 計測方式は論文4.3.1と同一:
- *   - process.hrtime.bigint()（ナノ秒精度）で各イテレーションを個別記録
- *   - ウォームアップ後に本計測
- *   - 統計計算は行わず生タイミング(ns)を出力（統計は ../aggregate.mjs が一元計算）
+ * Measurement method (identical to the methodology of the paper):
+ *   - every iteration is timed individually with process.hrtime.bigint() (ns precision)
+ *   - warmup iterations precede the measured run
+ *   - no statistics are computed here; raw timings (ns) are emitted (../aggregate.mjs aggregates them)
  *
- * 使い方:
+ * Usage:
  *   node bench.mjs --format <FORMAT> [--n 2000] [--warmup 50] [--out results.json]
  *
  * FORMAT:
- *   sdjwt | jsonld | jsonld-jcs | mdoc   基本の署名/検証（全言語共通のスイート）
- *   jsonld-complex                       OB3/DCC/合成BNの正規化（論文表16）
- *   breakdown                            JSON-LD署名処理の内訳（論文表5）
- *   serial                               シリアライズ速度・暗号なし（論文表9）
- *   scaling                              属性数スケーリング（論文表11）
- *   seldisc                              選択的開示（論文表12）
- *   unified                              Ed25519統一ベンチ（論文表15）
- *   all                                  上記すべて
+ *   sdjwt | jsonld | jsonld-jcs | mdoc   basic signing/verification (suite shared by all languages)
+ *   jsonld-complex                       canonicalization of OB3 / DCC / synthetic blank-node credentials
+ *   breakdown                            breakdown of the JSON-LD signing pipeline
+ *   serial                               serialization speed, no cryptography
+ *   scaling                              attribute-count scaling
+ *   seldisc                              selective disclosure
+ *   unified                              Ed25519-unified benchmark
+ *   all                                  all of the above
  */
 import crypto from 'node:crypto'
 import os from 'node:os'
@@ -26,16 +26,16 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 
-// jose v6 はグローバル crypto（WebCrypto）を前提とする。
-// Node 19 未満ではグローバル定義が無いため node:crypto.webcrypto をポリフィルする。
+// jose v6 assumes a global crypto object (WebCrypto).
+// Node versions older than 19 do not define it globally, so polyfill with node:crypto.webcrypto.
 if (typeof globalThis.crypto === 'undefined') {
   globalThis.crypto = crypto.webcrypto
 }
 const NODE_MAJOR = Number(process.versions.node.split('.')[0])
 if (NODE_MAJOR < 20) {
   process.stderr.write(
-    `WARN: Node ${process.version} を検出。論文計測は v22 系で実施しています。` +
-    `結果の比較可能性のため Node 22 の使用を推奨します（nvm install 22）。\n`)
+    `WARN: detected Node ${process.version}. The paper measurements used Node v22.x. ` +
+    `Node 22 or later is recommended so that results remain comparable (nvm install 22).\n`)
 }
 
 // ── CLI ──────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ const WARMUP = Number(args.warmup ?? 50)
 const OUT = args.out ?? null
 
 const benches = {}
-const meta = {}   // ペイロードサイズ等の付帯情報（aggregate が summary に転記）
+const meta = {}   // side information such as payload sizes (aggregate copies it into the summary)
 
 function bench(key, n, fn) {
   for (let i = 0; i < WARMUP; i++) fn()
@@ -83,7 +83,7 @@ function jcsCanonical(v) {
   return '{' + Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${jcsCanonical(v[k])}`).join(',') + '}'
 }
 
-// 共通クレデンシャル（論文4.3.1と同一ペイロード）
+// shared credential (same payload as in the paper's methodology)
 const SUBJECT = { id: 'did:example:1', name: 'Taro Yamada' }
 const VC_CONTEXT = [{
   '@version': 1.1, type: '@type', id: '@id',
@@ -103,7 +103,7 @@ const VC_DOC = {
 
 // ── SD-JWT VC ────────────────────────────────────────────────────
 async function runSdJwt() {
-  // stdcrypto: node:crypto 直接（論文の「ライブラリあり/なし共通」実装）
+  // stdcrypto: node:crypto directly (the "common to with/without library" implementation of the paper)
   const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519')
   const header = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', crv: 'Ed25519' })))
   const payload = b64url(Buffer.from(JSON.stringify({ iss: 'https://issuer.example.com', vct: 'identity', sub: 'did:example:holder' })))
@@ -118,7 +118,7 @@ async function runSdJwt() {
     crypto.verify(null, Buffer.from(`${p[0]}.${p[1]}`), publicKey, Buffer.from(p[2], 'base64url'))
   })
 
-  // jose: フルJWTパイプライン（参考値）
+  // jose: full JWT pipeline (reference value)
   const { SignJWT, jwtVerify } = await import('jose')
   const kp = crypto.generateKeyPairSync('ed25519')
   const claims = { iss: 'https://issuer.example.com', vct: 'identity', sub: 'did:example:holder' }
@@ -149,7 +149,7 @@ async function runJsonLd() {
   })
   await benchAsync('jsonld/jsonld-lib/normalize-only', N, async () => { await normalize() })
 
-  // noLib: インラインN-Quads
+  // noLib: inline N-Quads
   const vc = { issuer: 'https://example.com', issuanceDate: '2024-01-01T00:00:00Z', credentialSubject: SUBJECT }
   const inlineNorm = () => {
     const s = '_:c14n0', sub = `<${vc.credentialSubject.id}>`
@@ -231,7 +231,7 @@ async function runMdoc() {
     crypto.verify('SHA256', ss0, { key: publicKey, dsaEncoding: 'ieee-p1363' }, sig0)
   })
 
-  // noLib: 手書きCBOR
+  // noLib: hand-written CBOR
   const cborUint = (n) => n <= 23 ? Buffer.from([n]) : n <= 0xff ? Buffer.from([0x18, n]) : Buffer.from([0x19, (n >> 8) & 0xff, n & 0xff])
   const cborNeg = (n) => { const x = -1 - n; return x <= 23 ? Buffer.from([0x20 | x]) : Buffer.from([0x38, x]) }
   const cborText = (s) => { const b = Buffer.from(s, 'utf8'); const h = b.length <= 23 ? Buffer.from([0x60 | b.length]) : Buffer.from([0x78, b.length]); return Buffer.concat([h, b]) }
@@ -259,7 +259,7 @@ async function runMdoc() {
   })
 }
 
-// ── JSON-LD 複雑クレデンシャル (OB3 / DCC / 合成) — Nodeのみ ─────
+// ── JSON-LD complex credentials (OB3 / DCC / synthetic) — Node only ──────
 async function runJsonLdComplex() {
   const jsonld = (await import('jsonld')).default
   const obCtx = await import('@digitalcredentials/open-badges-context')
@@ -333,7 +333,7 @@ async function runJsonLdComplex() {
   }
 }
 
-// ── 補助スイート共通ヘルパー ─────────────────────────────────────
+// ── shared helpers for the auxiliary suites ──────────────────────────────
 function makeAttrs(n) {
   const attrs = {}
   for (let i = 0; i < n; i++) attrs[`attr_${String(i).padStart(3, '0')}`] = `value_${String(i).padStart(3, '0')}`
@@ -350,7 +350,7 @@ function attrNormalize(credId, issuerId, subjectId, attrs) {
   return quads.sort().join('\n') + '\n'
 }
 
-// ── breakdown: JSON-LD署名処理の内訳（論文表5） ──────────────────
+// ── breakdown: JSON-LD signing pipeline breakdown ────────────────────────
 async function runBreakdown() {
   const jsonld = (await import('jsonld')).default
   const { privateKey } = crypto.generateKeyPairSync('ed25519')
@@ -365,14 +365,14 @@ async function runBreakdown() {
   bench('breakdown/sign', N, () => {
     crypto.sign(null, hash0, privateKey)
   })
-  // 全体パイプライン（内訳合計との比較用）
+  // full pipeline (for comparison with the sum of the individual steps)
   await benchAsync('breakdown/full-pipeline-sign', N, async () => {
     const norm = await jsonld.normalize(VC_DOC, opts)
     crypto.sign(null, crypto.createHash('sha256').update(norm).digest(), privateKey)
   })
 }
 
-// ── serial: シリアライズ速度・暗号処理なし（論文表9） ────────────
+// ── serial: serialization speed, no cryptographic processing ─────────────
 async function runSerial() {
   const jsonld = (await import('jsonld')).default
   const { encode: cborEncode, decode: cborDecode } = await import('cbor-x')
@@ -396,7 +396,7 @@ async function runSerial() {
     JSON.parse(Buffer.from(p64, 'base64url').toString())
   })
 
-  // JSON-LD VC: encode/decode + URDNA2015 normalize（jsonldライブラリ）
+  // JSON-LD VC: encode/decode + URDNA2015 normalize (jsonld library)
   const jldStr = JSON.stringify(VC_DOC)
   bench('serial/jsonld/encode', N, () => { JSON.stringify(VC_DOC) })
   bench('serial/jsonld/decode', N, () => { JSON.parse(jldStr) })
@@ -420,7 +420,7 @@ async function runSerial() {
   bench('serial/mdoc/decode', N, () => { cborDecode(mdocEncoded) })
 }
 
-// ── scaling: 属性数スケーリング（論文表11） ──────────────────────
+// ── scaling: attribute-count scaling ─────────────────────────────────────
 async function runScaling() {
   const jsonld = (await import('jsonld')).default
   const { encode: cborEncode } = await import('cbor-x')
@@ -461,7 +461,7 @@ async function runScaling() {
   }
 }
 
-// ── seldisc: 選択的開示（論文表12） ──────────────────────────────
+// ── seldisc: selective disclosure ────────────────────────────────────────
 async function runSelDisc() {
   const { encode: cborEncode } = await import('cbor-x')
   const TOTAL = 20
@@ -521,13 +521,13 @@ async function runSelDisc() {
   }
 }
 
-// ── unified: Ed25519統一ベンチ（論文表15） ───────────────────────
+// ── unified: Ed25519-unified benchmark ───────────────────────────────────
 async function runUnified() {
   const jsonld = (await import('jsonld')).default
   const { encode: cborEncode } = await import('cbor-x')
   const FIELDS = makeAttrs(5)
 
-  // SD-JWT VC（node:crypto、表4と同一実装水準、5属性）
+  // SD-JWT VC (node:crypto, same implementation level as the main benchmark, 5 attributes)
   {
     const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519')
     const header = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'vc+sd-jwt' })))
@@ -544,7 +544,7 @@ async function runUnified() {
     })
   }
 
-  // JSON-LD VC（jsonld URDNA2015 + Ed25519、5属性）
+  // JSON-LD VC (jsonld URDNA2015 + Ed25519, 5 attributes)
   {
     const { privateKey } = crypto.generateKeyPairSync('ed25519')
     const publicKey = crypto.createPublicKey(privateKey)

@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * aggregate.mjs — 全言語・全フォーマットの生タイミングを一元集計
+ * aggregate.mjs — central aggregation of the raw timings of every language and format
  *
- * 各エンジン（node/go/python）が出力した生タイミング(ns)から、
- * 論文4.3.1と同一の統計量を計算する:
- *   - 平均・標本標準偏差(σ)・95%CI・p50/p90/p95/p99（線形補間）・min/max
- *   - 外れ値: Tukey基準(1.5×IQR)で検出・件数報告（除去しない）
- *   - トリム平均（Tukey外れ値除外、参考値）
- * 複数run（独立プロセス実行）がある場合は、各統計量のrun間中央値を採用。
+ * From the raw timings (ns) emitted by each engine (node/go/python) it computes
+ * the same statistics as the paper's methodology:
+ *   - mean, sample standard deviation (σ), 95%CI, p50/p90/p95/p99 (linear interpolation), min/max
+ *   - outliers: detected and counted with Tukey's fences (1.5×IQR); never removed
+ *   - trimmed mean (Tukey outliers excluded; reference value)
+ * When several runs (independent processes) exist, the cross-run median of each statistic is used.
  *
- * 使い方: node aggregate.mjs <resultsディレクトリ> [出力プレフィックス]
- *   → <prefix>.json（機械可読）と <prefix>.md（Markdownサマリ）を出力
+ * Usage: node aggregate.mjs <results directory> [output prefix]
+ *   -> writes <prefix>.json (machine readable) and <prefix>.md (Markdown summary)
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -18,7 +18,7 @@ import path from 'node:path'
 const dir = process.argv[2] ?? 'results'
 const prefix = process.argv[3] ?? path.join(dir, 'summary')
 
-// ── 統計 ─────────────────────────────────────────────────────────
+// ── statistics ───────────────────────────────────────────────────────────
 function computeStats(timingsNs) {
   const t = [...timingsNs].sort((a, b) => a - b)
   const n = t.length
@@ -52,7 +52,7 @@ const median = (arr) => {
   return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2
 }
 
-// ── 読み込み ─────────────────────────────────────────────────────
+// ── loading ──────────────────────────────────────────────────────────────
 const files = fs.readdirSync(dir).filter(f => f.endsWith('.json') && !f.startsWith('summary'))
 if (!files.length) { console.error(`no result JSON in ${dir}`); process.exit(1) }
 
@@ -71,7 +71,7 @@ for (const f of files) {
   }
 }
 
-// ── run間中央値 ──────────────────────────────────────────────────
+// ── cross-run medians ────────────────────────────────────────────────────
 const STAT_KEYS = ['meanMs', 'sdMs', 'ci95Ms', 'p50Ms', 'p90Ms', 'p95Ms', 'p99Ms',
   'minMs', 'maxMs', 'opsPerSec', 'opsPerSecP50', 'outlierPct', 'trimmedMeanMs']
 const agg = {}
@@ -83,20 +83,20 @@ for (const [key, runs] of perRun) {
   agg[key] = a
 }
 
-// ── 出力 ─────────────────────────────────────────────────────────
+// ── output ───────────────────────────────────────────────────────────────
 fs.writeFileSync(`${prefix}.json`, JSON.stringify({ generatedAt: new Date().toISOString(), envs, meta: metas, results: agg }, null, 2))
 
 const f3 = v => v.toFixed(3)
 const f1 = v => v.toFixed(1)
-let md = `# VC Format Benchmark Summary\n\n生成: ${new Date().toISOString()}\n\n`
-md += `統計: 各run内で 平均/σ/95%CI/p50/p95（ns精度、パーセンタイルは線形補間、外れ値はTukey 1.5×IQRで検出のみ）を計算し、run間の中央値を表示。\n\n`
+let md = `# VC Format Benchmark Summary\n\nGenerated: ${new Date().toISOString()}\n\n`
+md += `Statistics: within each run, mean / σ / 95%CI / p50 / p95 are computed at nanosecond precision (percentiles by linear interpolation; Tukey 1.5×IQR outliers are detected and counted only); the value shown is the median across runs.\n\n`
 
 const langs = [...new Set([...perRun.keys()].map(k => k.split('::')[0]))].sort()
 for (const lang of langs) {
   md += `## ${lang}\n\n`
   const e = envs[lang] ?? {}
-  md += `環境: ${JSON.stringify(e.libraries ?? {})} / ${e.node ?? e.go ?? e.python ?? ''} ${e.platform ?? ''}\n\n`
-  md += `| ベンチマーク | runs | N | 平均(ms) | σ(ms) | 95%CI(±ms) | p50(ms) | p95(ms) | 外れ値% | ops/sec(mean) | p50 run変動% |\n`
+  md += `Environment: ${JSON.stringify(e.libraries ?? {})} / ${e.node ?? e.go ?? e.python ?? ''} ${e.platform ?? ''}\n\n`
+  md += `| Benchmark | runs | N | mean(ms) | σ(ms) | 95%CI(±ms) | p50(ms) | p95(ms) | outliers% | ops/sec(mean) | p50 run variation% |\n`
   md += `|---|---|---|---|---|---|---|---|---|---|---|\n`
   const keys = [...perRun.keys()].filter(k => k.startsWith(lang + '::')).sort()
   for (const k of keys) {
@@ -106,7 +106,7 @@ for (const lang of langs) {
   md += `\n`
 }
 if (Object.keys(metas).length) {
-  md += `## メタ情報（ペイロードサイズ等、bytes）\n\n`
+  md += `## Metadata (payload sizes etc., bytes)\n\n`
   for (const [k, v] of Object.entries(metas).sort()) md += `- ${k}: ${v}\n`
   md += `\n`
 }

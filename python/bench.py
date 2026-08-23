@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-linux-bench Python engine — VCフォーマット別 署名/検証ベンチマーク
+linux-bench Python engine — signing/verification benchmarks per VC format
 
-計測方式:
-  - time.perf_counter_ns()（ナノ秒精度）で各イテレーションを個別記録
-  - ウォームアップ後に本計測
-  - 統計計算は行わず生タイミング(ns)を出力（統計は ../aggregate.mjs が一元計算）
+Measurement method:
+  - every iteration is timed individually with time.perf_counter_ns() (ns precision)
+  - warmup iterations precede the measured run
+  - no statistics are computed here; raw timings (ns) are emitted (../aggregate.mjs aggregates them)
 
-使い方:
+Usage:
   python3 bench.py --format sdjwt|jsonld|jsonld-jcs|mdoc|all \
                    [--n 2000] [--warmup 50] [--out results.json]
 
-依存: pip install -r requirements.txt  (cryptography, PyLD, cbor2)
+Dependencies: pip install -r requirements.txt  (cryptography, PyLD, cbor2)
 """
 import argparse
 import base64
@@ -73,7 +73,7 @@ VC_DOC = {
 
 
 def jcs_canonical(v) -> str:
-    """RFC 8785 相当の字句的正規化（本ベンチのデータは ASCII/単純型のみ）"""
+    """Lexical canonicalization equivalent to RFC 8785 (this benchmark uses ASCII/simple types only)."""
     return json.dumps(v, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
 
 
@@ -126,7 +126,7 @@ def run_jsonld():
 
     bench('jsonld/pyld/normalize-only', N, lambda: normalize())
 
-    # noLib: インラインN-Quads
+    # noLib: inline N-Quads
     vc = {'issuer': 'https://example.com',
           'issuanceDate': '2024-01-01T00:00:00Z', 'credentialSubject': SUBJECT}
 
@@ -196,7 +196,7 @@ def run_mdoc():
 
     def sign():
         der = priv.sign(build_sig_struct(), ec.ECDSA(hashes.SHA256()))
-        # COSE は raw r||s（ieee-p1363 相当）を用いる
+        # COSE uses raw r||s (equivalent to ieee-p1363)
         r, s = decode_dss_signature(der)
         _ = r.to_bytes(32, 'big') + s.to_bytes(32, 'big')
     bench('mdoc/cbor2/sign', N, sign)

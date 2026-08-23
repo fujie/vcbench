@@ -1,12 +1,12 @@
-// linux-bench Go engine — VCフォーマット別 署名/検証ベンチマーク
+// linux-bench Go engine — signing/verification benchmarks per VC format
 //
-// 計測方式:
-//   - time.Now()（モノトニック、ns精度）で各イテレーションを個別記録
-//   - ウォームアップ後に本計測
-//   - 統計計算は行わず生タイミング(ns)を出力（統計は ../aggregate.mjs が一元計算）
+// Measurement method:
+//   - every iteration is timed individually with time.Now() (monotonic, ns precision)
+//   - warmup iterations precede the measured run
+//   - no statistics are computed here; raw timings (ns) are emitted (../aggregate.mjs aggregates them)
 //
-// ビルド: go build -o vc-bench .
-// 使い方: ./vc-bench -format sdjwt|jsonld|jsonld-jcs|mdoc|all [-n 2000] [-warmup 50] [-out results.json]
+// Build: go build -o vc-bench .
+// Usage: ./vc-bench -format sdjwt|jsonld|jsonld-jcs|mdoc|all [-n 2000] [-warmup 50] [-out results.json]
 package main
 
 import (
@@ -63,7 +63,7 @@ func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 const credNS = "https://www.w3.org/2018/credentials#"
 const rdfType = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
 
-// 共通クレデンシャル（論文4.3.1と同一ペイロード）
+// shared credential (same payload as in the paper's methodology)
 var vcDoc = map[string]interface{}{
 	"@context": []interface{}{map[string]interface{}{
 		"@version":             1.1,
@@ -140,7 +140,7 @@ func runJsonLd() {
 		normalizeJsonLd(proc, opts)
 	})
 
-	// noLib: インラインN-Quads
+	// noLib: inline N-Quads
 	inlineNorm := func() []byte {
 		s, sub := "_:c14n0", "<did:example:1>"
 		quads := []string{
@@ -167,8 +167,8 @@ func runJsonLd() {
 }
 
 // ── JSON-LD VC (JCS / RFC 8785) ──────────────────────────────────
-// encoding/json の Marshal は map のキーをソートするため、
-// 本ベンチのデータ（ASCII・単純型）では JCS 相当の正準形が得られる。
+// encoding/json Marshal sorts map keys, so for the data used in this benchmark
+// (ASCII and simple types only) the result is equivalent to the JCS canonical form.
 func runJcs() {
 	doc := map[string]interface{}{
 		"@context":          map[string]interface{}{"@version": 1.1, "id": "@id", "type": "@type"},
@@ -223,7 +223,7 @@ func runMdoc() {
 	bench("mdoc/fxamacker-cbor/sign", *nFlag, func() {
 		ss := buildSigStruct()
 		h := sha256.Sum256(ss)
-		// COSE は raw r||s。SignASN1 の代わりに ecdsa.Sign で r,s を取得
+		// COSE uses raw r||s: obtain r and s with ecdsa.Sign instead of SignASN1
 		r, s, _ := ecdsa.Sign(rand.Reader, priv, h[:])
 		raw := make([]byte, 64)
 		r.FillBytes(raw[:32])
