@@ -50,6 +50,7 @@ vcbench/
 | `scaling` | ✓ (**node only**) | — | — | Attribute-count scaling 5/20/100/500 + payload sizes (Table 11) |
 | `seldisc` | ✓ (**node only**) | — | — | Selective disclosure 1/3/5/10/20 of 20 (Table 12) |
 | `unified` | ✓ (**node only**) | — | — | Ed25519-unified benchmark (mdoc uses COSE alg -8) (Table 15) |
+| `e2e` | ✓ (**node only**) | — | — | End-to-end issue → present → verify with selective disclosure (5 of 20 attributes). Unlike the per-format suites, every format includes disclosure creation and digest matching, so the measured scope is identical across formats. |
 
 The credential payloads and implementation approaches are identical to those described in
 Sections 4.3.1 and 4.3.5 of the paper.

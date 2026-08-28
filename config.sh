@@ -19,7 +19,8 @@ FORMATS=${FORMATS:-"sdjwt jsonld jsonld-jcs mdoc"}
 # node-only additional suites (leave empty to disable):
 #   jsonld-complex (complex credentials)  breakdown (signing breakdown)  serial (serialization)
 #   scaling (attribute scaling)  seldisc (selective disclosure)  unified (Ed25519-unified)
-NODE_EXTRA_FORMATS=${NODE_EXTRA_FORMATS:-"jsonld-complex breakdown serial scaling seldisc unified"}
+#   e2e (end-to-end issue -> present -> verify, 5 of 20 attributes disclosed)
+NODE_EXTRA_FORMATS=${NODE_EXTRA_FORMATS:-"jsonld-complex breakdown serial scaling seldisc unified e2e"}
 
 # CPU pinning (e.g. "0" or "2,3"; empty disables it)
 # On bare metal, pinning to a dedicated core avoids interference from other processes

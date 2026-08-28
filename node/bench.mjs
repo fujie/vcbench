@@ -18,6 +18,7 @@
  *   scaling                              attribute-count scaling
  *   seldisc                              selective disclosure
  *   unified                              Ed25519-unified benchmark
+ *   e2e                                  end-to-end issue -> present (5 of 20 disclosed) -> verify
  *   all                                  all of the above
  */
 import crypto from 'node:crypto'
@@ -594,6 +595,150 @@ async function runUnified() {
 }
 
 // ── main ─────────────────────────────────────────────────────────
+// ── e2e: end-to-end issue -> present -> verify, with selective disclosure ──
+// Reviewer note: the per-format main benchmarks cover different scopes (SD-JWT VC
+// excludes disclosure creation/matching). This suite measures the same scenario for
+// every format: issue a 20-attribute credential, disclose 5 attributes, verify.
+async function runE2E() {
+  const { encode: cborEncode, decode: cborDecode } = await import('cbor-x')
+  const jsonld = (await import('jsonld')).default
+  const TOTAL = 20, DISCLOSE = 5
+  const attrs = makeAttrs(TOTAL)
+  const entries = Object.entries(attrs)
+  const shown = entries.slice(0, DISCLOSE)
+  const CRED_ID = 'urn:example:cred:e2e'
+  const ISSUER_ID = 'did:example:issuer'
+  const SUBJ_ID = 'did:example:subject:001'
+  const sha256 = (b) => crypto.createHash('sha256').update(b).digest()
+
+  // ---- SD-JWT VC (Ed25519) : issue = sign + build disclosures, verify = JWS + digest match
+  {
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519')
+    const mkDisclosure = (k, v) => {
+      const salt = b64url(crypto.randomBytes(16))
+      const d = b64url(Buffer.from(JSON.stringify([salt, k, v])))
+      return { d, hash: b64url(sha256(Buffer.from(d))) }
+    }
+    const issue = () => {
+      const ds = entries.map(([k, v]) => mkDisclosure(k, v))
+      const header = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'vc+sd-jwt' })))
+      const payload = b64url(Buffer.from(JSON.stringify({
+        iss: ISSUER_ID, sub: SUBJ_ID, vct: 'https://example.com/vct', iat: 1714000000,
+        _sd_alg: 'sha-256', _sd: ds.map((x) => x.hash),
+      })))
+      const input = `${header}.${payload}`
+      const sig = b64url(crypto.sign(null, Buffer.from(input), privateKey))
+      return { token: `${input}.${sig}`, ds }
+    }
+    const issued = issue()
+    const present = (o) => `${o.token}~${o.ds.slice(0, DISCLOSE).map((x) => x.d).join('~')}~`
+    const presented = present(issued)
+    const verify = (vp) => {
+      const [token, ...disclosures] = vp.split('~').filter(Boolean)
+      const [h, p, s] = token.split('.')
+      if (!crypto.verify(null, Buffer.from(`${h}.${p}`), publicKey, Buffer.from(s, 'base64url'))) {
+        throw new Error('bad signature')
+      }
+      const payload = JSON.parse(Buffer.from(p, 'base64url').toString())
+      const set = new Set(payload._sd)
+      for (const d of disclosures) {
+        if (!set.has(b64url(sha256(Buffer.from(d))))) throw new Error('digest mismatch')
+        JSON.parse(Buffer.from(d, 'base64url').toString())
+      }
+      return true
+    }
+    bench('e2e/sdjwt/issue', N, () => issue())
+    bench('e2e/sdjwt/present', N, () => present(issued))
+    bench('e2e/sdjwt/verify', N, () => verify(presented))
+    bench('e2e/sdjwt/full', N, () => verify(present(issue())))
+    meta['e2e/sdjwt/vpBytes'] = Buffer.byteLength(presented)
+  }
+
+  // ---- VCDM 2.0 + Data Integrity : issue/verify over RDFC-1.0 canonicalized N-Quads
+  {
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519')
+    const E2E_CONTEXT = [...VC_CONTEXT, { '@vocab': VOCAB }]
+    const docOf = (pairs) => ({
+      '@context': E2E_CONTEXT,
+      id: CRED_ID, type: ['VerifiableCredential'], issuer: ISSUER_ID,
+      credentialSubject: { id: SUBJ_ID, ...Object.fromEntries(pairs) },
+    })
+    const fullDoc = docOf(entries)
+    const subsetDoc = docOf(shown)
+    const opts = { algorithm: 'URDNA2015', format: 'application/n-quads' }
+    const issue = async () => {
+      const nq = await jsonld.normalize(fullDoc, opts)
+      return crypto.sign(null, sha256(Buffer.from(nq)), privateKey)
+    }
+    const sigFull = await issue()
+    // presenting a subset requires re-issuing the derived credential (no unlinkable derivation)
+    const present = async () => {
+      const nq = await jsonld.normalize(subsetDoc, opts)
+      return { nq, sig: crypto.sign(null, sha256(Buffer.from(nq)), privateKey) }
+    }
+    const vp = await present()
+    const verify = async (p) => {
+      const nq = await jsonld.normalize(subsetDoc, opts)
+      return crypto.verify(null, sha256(Buffer.from(nq)), publicKey, p.sig)
+    }
+    await benchAsync('e2e/jsonld/issue', N, async () => { await issue() })
+    await benchAsync('e2e/jsonld/present', N, async () => { await present() })
+    await benchAsync('e2e/jsonld/verify', N, async () => { await verify(vp) })
+    await benchAsync('e2e/jsonld/full', N, async () => { await verify(await present()) })
+    meta['e2e/jsonld/vpBytes'] = Buffer.byteLength(vp.nq)
+    void sigFull
+  }
+
+  // ---- mdoc : issue = per-element digests + MSO + COSE_Sign1, verify = COSE + digest match
+  {
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
+    const items = entries.map(([k, v], i) => ({
+      digestID: i, random: crypto.randomBytes(16), elementIdentifier: k, elementValue: v,
+    }))
+    const issue = () => {
+      const encoded = items.map((it) => cborEncode(it))
+      const digests = new Map(items.map((it, i) => [it.digestID, sha256(encoded[i])]))
+      const mso = cborEncode({
+        version: '1.0', digestAlgorithm: 'SHA-256', docType: 'org.iso.18013.5.1.mDL',
+        valueDigests: { 'org.iso.18013.5.1': Object.fromEntries(digests) },
+      })
+      const protectedHdr = cborEncode({ 1: -7 })
+      const sigStruct = cborEncode(['Signature1', protectedHdr, Buffer.alloc(0), mso])
+      const sig = crypto.sign('sha256', sigStruct, { key: privateKey, dsaEncoding: 'ieee-p1363' })
+      return { encoded, mso, protectedHdr, sig }
+    }
+    const issued = issue()
+    const present = (o) => cborEncode({
+      docType: 'org.iso.18013.5.1.mDL',
+      issuerSigned: {
+        nameSpaces: { 'org.iso.18013.5.1': o.encoded.slice(0, DISCLOSE) },
+        issuerAuth: [o.protectedHdr, {}, o.mso, o.sig],
+      },
+    })
+    const presented = present(issued)
+    const verify = (vpBytes) => {
+      const doc = cborDecode(vpBytes)
+      const [protectedHdr, , mso, sig] = doc.issuerSigned.issuerAuth
+      const sigStruct = cborEncode(['Signature1', protectedHdr, Buffer.alloc(0), mso])
+      if (!crypto.verify('sha256', sigStruct, { key: publicKey, dsaEncoding: 'ieee-p1363' }, sig)) {
+        throw new Error('bad signature')
+      }
+      const digests = cborDecode(mso).valueDigests['org.iso.18013.5.1']
+      for (const enc of doc.issuerSigned.nameSpaces['org.iso.18013.5.1']) {
+        const it = cborDecode(enc)
+        const expected = Buffer.from(digests[it.digestID])
+        if (!expected.equals(sha256(Buffer.from(enc)))) throw new Error('digest mismatch')
+      }
+      return true
+    }
+    bench('e2e/mdoc/issue', N, () => issue())
+    bench('e2e/mdoc/present', N, () => present(issued))
+    bench('e2e/mdoc/verify', N, () => verify(presented))
+    bench('e2e/mdoc/full', N, () => verify(present(issue())))
+    meta['e2e/mdoc/vpBytes'] = presented.length
+  }
+}
+
 const RUNNERS = {
   sdjwt: runSdJwt,
   jsonld: runJsonLd,
@@ -605,6 +750,7 @@ const RUNNERS = {
   scaling: runScaling,
   seldisc: runSelDisc,
   unified: runUnified,
+  e2e: runE2E,
 }
 
 async function main() {
