@@ -684,7 +684,7 @@ async function runE2E() {
     await benchAsync('e2e/jsonld/issue', N, async () => { await issue() })
     await benchAsync('e2e/jsonld/present', N, async () => { await present() })
     await benchAsync('e2e/jsonld/verify', N, async () => { await verify(vp) })
-    await benchAsync('e2e/jsonld/full', N, async () => { await verify(await present()) })
+    await benchAsync('e2e/jsonld/full', N, async () => { await issue(); await verify(await present()) })
     meta['e2e/jsonld/vpBytes'] = Buffer.byteLength(vp.nq)
     void sigFull
   }

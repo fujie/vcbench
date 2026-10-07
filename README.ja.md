@@ -2,11 +2,14 @@
 
 [English](README.md) | **日本語**
 
-論文「Verifiable Credential フォーマットの再現可能なベンチマークとセキュリティ分析：
-SD-JWT VC、JSON-LD VC、mdoc の比較」の性能計測を、Linuxサーバ上で言語別・
-クレデンシャルフォーマット別に再現するための自己完結型の計測キットです。
+論文「Verifiable Credential フォーマットの署名検証性能に関する実証的評価：
+SD-JWT VC、W3C VCDM、mdoc の3言語横断ベンチマーク」の性能計測を、Linuxサーバ上で
+言語別・クレデンシャルフォーマット別に再現するための自己完結型の計測キットです。
+本キットが出力する正規化コストの計測値は、姉妹論文「Verifiable Credential 検証パイプラインの
+セキュリティ分析」でも使用しています。
 
-SD-JWT VC / JSON-LD VC / JSON-LD VC (JCS) / mdoc の署名・検証性能を、
+SD-JWT VC / W3C VCDM（W3C Verifiable Credentials Data Model 2.0 に Data Integrity の
+暗号スイート eddsa-rdfc-2022 を組み合わせた構成）/ W3C VCDM (JCS) / mdoc の署名・検証性能を、
 Node.js・Go・Python の3言語で**同一手法・同一統計処理**により計測します。
 
 - 計測タイマはナノ秒精度（各言語のモノトニッククロック）
@@ -40,18 +43,18 @@ vcbench/
 | フォーマット | node | go | python | 内容 |
 |---|---|---|---|---|
 | `sdjwt` | ✓（node:crypto + jose参考値） | ✓（stdlib） | ✓（cryptography） | Ed25519 JWT の署名/検証 |
-| `jsonld` | ✓（jsonld + noLib） | ✓（json-gold + noLib） | ✓（PyLD + noLib） | URDNA2015正規化 + SHA-256 + Ed25519。normalize単体も計測 |
+| `jsonld` | ✓（jsonld + noLib） | ✓（json-gold + noLib） | ✓（PyLD + noLib） | RDFC-1.0正規化 + SHA-256 + Ed25519。normalize単体も計測（jsonldライブラリはRDFC-1.0をアルゴリズム識別子 `URDNA2015` として提供） |
 | `jsonld-jcs` | ✓（canonicalize + noLib） | ✓（noLib） | ✓（noLib） | JCS (RFC 8785) + SHA-256 + Ed25519 |
 | `mdoc` | ✓（cbor-x + 手書きCBOR） | ✓（fxamacker/cbor） | ✓（cbor2） | CBOR/COSE_Sign1 + ECDSA P-256（raw r‖s） |
-| `jsonld-complex` | ✓（**nodeのみ**） | — | — | OpenBadges v3.0 / DCC型 / 合成ブランクノード10・50 のURDNA2015正規化（論文表16） |
-| `breakdown` | ✓（**nodeのみ**） | — | — | JSON-LD署名処理の内訳: 正規化/ハッシュ/署名を個別計測（論文表5） |
-| `serial` | ✓（**nodeのみ**） | — | — | シリアライズ速度・暗号処理なし + ペイロードサイズ（論文表9） |
+| `jsonld-complex` | ✓（**nodeのみ**） | — | — | Open Badges v3.0 / DCC型 / 合成ブランクノード10・50 のRDFC-1.0正規化（論文表14） |
+| `breakdown` | ✓（**nodeのみ**） | — | — | W3C VCDM署名処理の内訳: 正規化/ハッシュ/署名を個別計測（論文表7） |
+| `serial` | ✓（**nodeのみ**） | — | — | シリアライズ速度・暗号処理なし + ペイロードサイズ（論文表10） |
 | `scaling` | ✓（**nodeのみ**） | — | — | 属性数スケーリング 5/20/100/500 + ペイロードサイズ（論文表11） |
 | `seldisc` | ✓（**nodeのみ**） | — | — | 選択的開示 1/3/5/10/20 of 20（論文表12） |
-| `unified` | ✓（**nodeのみ**） | — | — | Ed25519統一ベンチ（mdocはCOSE alg -8）（論文表15） |
-| `e2e` | ✓（**nodeのみ**） | — | — | 発行→提示→検証のend-to-end計測（20属性中5属性を開示）。各フォーマットともDisclosure生成とダイジェスト照合を含むため、フォーマット間で計測範囲が揃う |
+| `unified` | ✓（**nodeのみ**） | — | — | Ed25519統一ベンチ（mdocはCOSE alg -8）（論文表13） |
+| `e2e` | ✓（**nodeのみ**） | — | — | 発行→提示→検証のend-to-end計測（20属性中5属性を開示）。各フォーマットともDisclosure生成とダイジェスト照合を含むため、フォーマット間で計測範囲が揃う。`full` は各フォーマットとも1イテレーションで発行→提示→検証を通して計測する（論文表6） |
 
-クレデンシャルのペイロード・実装方式は論文4.3.1／4.3.5節と同一です。
+クレデンシャルのペイロード・実装方式は論文4.2／4.3節と同一です。
 
 ## 2. 前提環境
 
@@ -191,18 +194,19 @@ node aggregate.mjs results/ results/summary
 
 | 論文の表・図 | summary.md の対応キー |
 |---|---|
-| 表4・表8（Node署名/検証） | `node :: sdjwt/*`, `jsonld/*`, `jsonld-jcs/*`, `mdoc/*` |
-| 表8のjose参考行 | `node :: sdjwt/jose/*` |
+| 表9（Node署名/検証） | `node :: sdjwt/*`, `jsonld/*`, `jsonld-jcs/*`, `mdoc/*` |
+| 表6（選択的開示を含むend-to-end） | `node :: e2e/<fmt>/issue\|present\|verify\|full` |
+| 表9のjose参考行 | `node :: sdjwt/jose/*` |
 | 図2（Python） | `python :: */sign, */verify` |
 | 図3（Go） | `go :: */sign, */verify` |
-| 表16・図6（複雑クレデンシャル） | `node :: jsonld-complex/*/normalize` |
-| 表5（署名処理内訳） | `node :: breakdown/normalize|hash|sign`（全体は `breakdown/full-pipeline-sign`） |
-| 表9（シリアライズ速度） | `node :: serial/*`（ペイロードサイズはメタ情報 `serial/*/payloadBytes`） |
+| 表14・図6（複雑クレデンシャル） | `node :: jsonld-complex/*/normalize` |
+| 表7（署名処理内訳） | `node :: breakdown/normalize|hash|sign`（全体は `breakdown/full-pipeline-sign`） |
+| 表10（シリアライズ速度） | `node :: serial/*`（ペイロードサイズはメタ情報 `serial/*/payloadBytes`） |
 | 表11・図4（属性数スケーリング） | `node :: scaling/<fmt>/<属性数>`（サイズはメタ情報） |
 | 表12・図5（選択的開示） | `node :: seldisc/<fmt>/<開示数>of20` |
-| 表15（Ed25519統一） | `node :: unified/<fmt>/sign|verify` |
+| 表13（Ed25519統一） | `node :: unified/<fmt>/sign|verify` |
 
-表2（実行環境）には `results/<日時>/environment.txt` の内容（CPU型番・SMT/ガバナ設定等）を反映します。
+表4（実行環境）には `results/<日時>/environment.txt` の内容（CPU型番・SMT/ガバナ設定等）を反映します。
 
 ## 8. トラブルシューティング
 
@@ -217,7 +221,7 @@ node aggregate.mjs results/ results/summary
 
 ## 9. 論文で報告した計測条件
 
-論文の表4〜16および図1〜6は、本キットを以下の条件で実行した結果に基づきます。
+論文の表4〜15および図1〜6は、本キットを以下の条件（環境A）で実行した結果に基づきます。環境Bはベアメタルでの再現性確認用です。
 
 | 項目 | 値 |
 |---|---|
@@ -226,6 +230,7 @@ node aggregate.mjs results/ results/summary
 | ランタイム | Node.js v24.18.0 (OpenSSL 3.5.7) / Go 1.22.2 / Python 3.12.3 |
 | ライブラリ | jose 6.2.3, jsonld 8.3.3 (rdf-canonize 3.4.0), cbor-x 1.6.4, canonicalize 1.0.8, PyLD 3.1.0, cbor2 6.1.3, cryptography 49.0.0, piprate/json-gold v0.8.0, fxamacker/cbor v2.9.2 |
 | パラメータ | N=2,000 / ウォームアップ50回 / 独立5回実行 |
+| 環境B（再現性確認） | Intel Celeron N5095（2コア, x86_64）、SMT非対応、governor `performance`、turbo無効。Linux kernel 7.0.0-38-generic。Node.js v22.22.1 / Go 1.26.0 / Python 3.14.4 |
 
 実行コマンド:
 

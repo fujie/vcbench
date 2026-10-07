@@ -3,12 +3,15 @@
 **English** | [日本語](README.ja.md)
 
 A self-contained measurement kit that reproduces, on a Linux server, the performance
-evaluation reported in the paper *"A Reproducible Benchmark and Security Analysis of
-Verifiable Credential Formats: Comparing SD-JWT VC, JSON-LD VC, and mdoc."*
+evaluation reported in the paper *"An Empirical Evaluation of Signature and Verification
+Performance of Verifiable Credential Formats: A Cross-Language Benchmark of SD-JWT VC,
+W3C VCDM, and mdoc."* The canonicalization-cost measurements it produces are also used by
+the companion paper *"A Security Analysis of Verifiable Credential Verification Pipelines."*
 
-It measures the signing and verification performance of SD-JWT VC / JSON-LD VC /
-JSON-LD VC (JCS) / mdoc across three languages — Node.js, Go, and Python — using an
-**identical methodology and identical statistical processing**.
+It measures the signing and verification performance of SD-JWT VC / W3C VCDM (the W3C
+Verifiable Credentials Data Model 2.0 combined with the Data Integrity cryptosuite
+eddsa-rdfc-2022) / W3C VCDM (JCS) / mdoc across three languages — Node.js, Go, and
+Python — using an **identical methodology and identical statistical processing**.
 
 - Nanosecond-precision timers (each language's monotonic clock)
 - Each engine emits only raw timings; all statistics are computed by a single shared script
@@ -41,19 +44,19 @@ vcbench/
 | Format | node | go | python | Contents |
 |---|---|---|---|---|
 | `sdjwt` | ✓ (node:crypto + jose reference) | ✓ (stdlib) | ✓ (cryptography) | Ed25519 JWT signing/verification |
-| `jsonld` | ✓ (jsonld + noLib) | ✓ (json-gold + noLib) | ✓ (PyLD + noLib) | URDNA2015 canonicalization + SHA-256 + Ed25519; canonicalization alone is also measured |
+| `jsonld` | ✓ (jsonld + noLib) | ✓ (json-gold + noLib) | ✓ (PyLD + noLib) | RDFC-1.0 canonicalization + SHA-256 + Ed25519; canonicalization alone is also measured. (The `jsonld` library exposes RDFC-1.0 under the algorithm identifier `URDNA2015`.) |
 | `jsonld-jcs` | ✓ (canonicalize + noLib) | ✓ (noLib) | ✓ (noLib) | JCS (RFC 8785) + SHA-256 + Ed25519 |
 | `mdoc` | ✓ (cbor-x + hand-written CBOR) | ✓ (fxamacker/cbor) | ✓ (cbor2) | CBOR/COSE_Sign1 + ECDSA P-256 (raw r‖s) |
-| `jsonld-complex` | ✓ (**node only**) | — | — | URDNA2015 canonicalization of Open Badges v3.0 / DCC-style / synthetic blank-node (10, 50) credentials (paper Table 16) |
-| `breakdown` | ✓ (**node only**) | — | — | JSON-LD signing breakdown: canonicalization / hashing / signing measured individually (Table 5) |
-| `serial` | ✓ (**node only**) | — | — | Serialization speed without cryptography + payload sizes (Table 9) |
+| `jsonld-complex` | ✓ (**node only**) | — | — | RDFC-1.0 canonicalization of Open Badges v3.0 / DCC-style / synthetic blank-node (10, 50) credentials (paper Table 14) |
+| `breakdown` | ✓ (**node only**) | — | — | W3C VCDM signing breakdown: canonicalization / hashing / signing measured individually (Table 7) |
+| `serial` | ✓ (**node only**) | — | — | Serialization speed without cryptography + payload sizes (Table 10) |
 | `scaling` | ✓ (**node only**) | — | — | Attribute-count scaling 5/20/100/500 + payload sizes (Table 11) |
 | `seldisc` | ✓ (**node only**) | — | — | Selective disclosure 1/3/5/10/20 of 20 (Table 12) |
-| `unified` | ✓ (**node only**) | — | — | Ed25519-unified benchmark (mdoc uses COSE alg -8) (Table 15) |
-| `e2e` | ✓ (**node only**) | — | — | End-to-end issue → present → verify with selective disclosure (5 of 20 attributes). Unlike the per-format suites, every format includes disclosure creation and digest matching, so the measured scope is identical across formats. |
+| `unified` | ✓ (**node only**) | — | — | Ed25519-unified benchmark (mdoc uses COSE alg -8) (Table 13) |
+| `e2e` | ✓ (**node only**) | — | — | End-to-end issue → present → verify with selective disclosure (5 of 20 attributes). Unlike the per-format suites, every format includes disclosure creation and digest matching, so the measured scope is identical across formats. `full` times one issue → present → verify pass per iteration for every format (Table 6). |
 
 The credential payloads and implementation approaches are identical to those described in
-Sections 4.3.1 and 4.3.5 of the paper.
+Sections 4.2 and 4.3 of the paper.
 
 ## 2. Requirements
 
@@ -203,18 +206,19 @@ machine-readable form used when updating the tables in the paper.
 
 | Paper table / figure | Key in summary.md |
 |---|---|
-| Tables 4 and 8 (Node signing/verification) | `node :: sdjwt/*`, `jsonld/*`, `jsonld-jcs/*`, `mdoc/*` |
-| jose reference rows in Table 8 | `node :: sdjwt/jose/*` |
+| Table 9 (Node signing/verification) | `node :: sdjwt/*`, `jsonld/*`, `jsonld-jcs/*`, `mdoc/*` |
+| Table 6 (end-to-end with selective disclosure) | `node :: e2e/<fmt>/issue\|present\|verify\|full` |
+| jose reference rows in Table 9 | `node :: sdjwt/jose/*` |
 | Figure 2 (Python) | `python :: */sign, */verify` |
 | Figure 3 (Go) | `go :: */sign, */verify` |
-| Table 16 / Figure 6 (complex credentials) | `node :: jsonld-complex/*/normalize` |
-| Table 5 (signing breakdown) | `node :: breakdown/normalize\|hash\|sign` (full pipeline: `breakdown/full-pipeline-sign`) |
-| Table 9 (serialization speed) | `node :: serial/*` (payload sizes are in the metadata section, `serial/*/payloadBytes`) |
+| Table 14 / Figure 6 (complex credentials) | `node :: jsonld-complex/*/normalize` |
+| Table 7 (signing breakdown) | `node :: breakdown/normalize\|hash\|sign` (full pipeline: `breakdown/full-pipeline-sign`) |
+| Table 10 (serialization speed) | `node :: serial/*` (payload sizes are in the metadata section, `serial/*/payloadBytes`) |
 | Table 11 / Figure 4 (attribute scaling) | `node :: scaling/<fmt>/<attributes>` (sizes in metadata) |
 | Table 12 / Figure 5 (selective disclosure) | `node :: seldisc/<fmt>/<disclosed>of20` |
-| Table 15 (Ed25519-unified) | `node :: unified/<fmt>/sign\|verify` |
+| Table 13 (Ed25519-unified) | `node :: unified/<fmt>/sign\|verify` |
 
-Table 2 of the paper (execution environment) is populated from
+Table 4 of the paper (execution environments) is populated from
 `results/<timestamp>/environment.txt` (CPU model, SMT/governor settings, and so on).
 
 ## 8. Troubleshooting
@@ -231,8 +235,8 @@ Table 2 of the paper (execution environment) is populated from
 
 ## 9. Measurement conditions reported in the paper
 
-Tables 4–16 and Figures 1–6 of the paper are based on running this kit under the
-following conditions.
+Tables 4–15 and Figures 1–6 of the paper are based on running this kit under the
+following conditions (Environment A; Environment B is the bare-metal cross-check).
 
 | Item | Value |
 |---|---|
@@ -241,6 +245,7 @@ following conditions.
 | Runtimes | Node.js v24.18.0 (OpenSSL 3.5.7) / Go 1.22.2 / Python 3.12.3 |
 | Libraries | jose 6.2.3, jsonld 8.3.3 (rdf-canonize 3.4.0), cbor-x 1.6.4, canonicalize 1.0.8, PyLD 3.1.0, cbor2 6.1.3, cryptography 49.0.0, piprate/json-gold v0.8.0, fxamacker/cbor v2.9.2 |
 | Parameters | N=2,000 / 50 warmup iterations / 5 independent runs |
+| Environment B (cross-check) | Intel Celeron N5095 (2 cores, x86_64), SMT not supported, governor `performance`, turbo off; Linux kernel 7.0.0-38-generic; Node.js v22.22.1 / Go 1.26.0 / Python 3.14.4 |
 
 Command used:
 
