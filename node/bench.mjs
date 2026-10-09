@@ -739,6 +739,322 @@ async function runE2E() {
   }
 }
 
+// ── poison graph / call-limit suite ──────────────────────────────────────
+// Blank-node graph families used as adversarial input to RDFC-1.0, plus a
+// sweep of the rdf-canonize call limit (maxDeepIterations). Unlike the other
+// suites, each condition records its outcome (completed / aborted by the call
+// limit / truncated by the time budget) instead of discarding exceptions.
+async function runPoison() {
+  const jsonld = (await import('jsonld')).default
+  const BASE = { algorithm: 'URDNA2015', format: 'application/n-quads', safe: false }
+
+  // Every node carries an explicit blank node identifier, so the references
+  // below really do form cycles. (A generator that omits @id yields a forest
+  // of disjoint trees, which is not a worst case for RDFC-1.0.)
+  const node = (i, targets) => ({
+    '@id': `_:b${i}`,
+    'http://example.org/link': targets.map((j) => ({ '@id': `_:b${j}` })),
+  })
+  const FAMILIES = {
+    // K_n: every blank node references every other one
+    complete: (n) => ({ '@graph': Array.from({ length: n }, (_, i) =>
+      node(i, Array.from({ length: n }, (_, j) => j).filter((j) => j !== i))) }),
+    // bidirectional ring C_n
+    ring: (n) => ({ '@graph': Array.from({ length: n }, (_, i) =>
+      node(i, [(i + 1) % n, (i + n - 1) % n])) }),
+    // 3-regular circulant graph
+    cubic: (n) => ({ '@graph': Array.from({ length: n }, (_, i) =>
+      node(i, [(i + 1) % n, (i + n - 1) % n, (i + Math.floor(n / 2)) % n])) }),
+    // acyclic forest produced by a generator that omits @id (kept for comparison)
+    forest: (n) => ({ '@graph': Array.from({ length: n }, (_, i) => [
+      { '@type': 'http://example.org/Node', 'http://example.org/link': { '@id': `_:b${(i + 1) % n}` } },
+      { '@type': 'http://example.org/Node', 'http://example.org/link': { '@id': `_:b${i}` } },
+    ]).flat() }),
+  }
+
+  // Legitimate (non-adversarial) inputs, used to check that a call limit does
+  // not reject well-formed credentials.
+  let ob = null
+  const ctxMap = new Map()
+  try {
+    const obCtx = await import('@digitalcredentials/open-badges-context')
+    ob = obCtx.default ?? obCtx
+    const ccCtx = await import('@digitalbazaar/credentials-context')
+    const cc = ccCtx.default ?? ccCtx
+    for (const [url, doc] of ob.contexts) ctxMap.set(url, doc)
+    for (const [url, doc] of cc.contexts) ctxMap.set(url, doc)
+  } catch (e) {
+    process.stderr.write(`  [poison] OB3 context package unavailable, skipping legit-ob3: ${e.message}\n`)
+  }
+  const loader = (url) => {
+    const doc = ctxMap.get(url)
+    if (!doc) throw new Error(`Context not embedded: ${url}`)
+    return { contextUrl: null, document: doc, documentUrl: url }
+  }
+  const synth = (bn) => ({
+    '@context': [...VC_CONTEXT, { '@vocab': VOCAB }],
+    id: 'urn:example:synth', type: ['VerifiableCredential'], issuer: 'did:example:issuer',
+    credentialSubject: { id: 'did:example:sub', evidence: Array.from({ length: bn }, (_, i) => ({ type: 'Evidence', narrative: `evidence item ${i}`, weight: String(i) })) },
+  })
+
+  // Runs one condition under a wall-clock budget. Returns the outcome so that
+  // aborted and truncated conditions are reported rather than silently timed.
+  const BUDGET_MS = Number(process.env.POISON_BUDGET_MS ?? 20000)
+  async function measure(key, doc, opts, maxIter) {
+    const o = { ...BASE, ...opts }
+    let outcome = 'completed'
+    let err = null
+    // one warmup pass (also establishes the outcome)
+    const w0 = process.hrtime.bigint()
+    try { await jsonld.normalize(doc, o) } catch (e) { outcome = 'aborted'; err = String(e.message || e).split('\n')[0] }
+    const first = Number(process.hrtime.bigint() - w0)
+    // size the run so that one condition never exceeds the budget
+    const perIterMs = first / 1e6
+    let n = Math.max(1, Math.min(maxIter, Math.floor(BUDGET_MS / Math.max(perIterMs, 0.001))))
+    if (n > 1) for (let i = 0; i < Math.min(WARMUP, n); i++) { try { await jsonld.normalize(doc, o) } catch {} }
+    const t = new Array(n)
+    const start = process.hrtime.bigint()
+    let done = 0
+    for (let i = 0; i < n; i++) {
+      const s = process.hrtime.bigint()
+      try { await jsonld.normalize(doc, o) } catch { /* outcome already recorded */ }
+      t[i] = Number(process.hrtime.bigint() - s)
+      done = i + 1
+      if (Number(process.hrtime.bigint() - start) / 1e6 > BUDGET_MS) break
+    }
+    benches[key] = { n: done, warmup: n > 1 ? Math.min(WARMUP, n) : 0, timings_ns: t.slice(0, done) }
+    meta[`${key}/outcome`] = outcome
+    if (err) meta[`${key}/error`] = err
+    if (done < maxIter) meta[`${key}/truncated`] = `budget ${BUDGET_MS} ms`
+    process.stderr.write(`  ${key}: ${outcome} (n=${done}, first=${perIterMs.toFixed(3)} ms)\n`)
+  }
+
+  // Input shapes are reported so that "n" is unambiguous (the number of blank
+  // nodes after expansion is not always the generator's parameter).
+  async function shapeOf(doc) {
+    const nq = await jsonld.normalize(doc, BASE)
+    const lines = nq.trim().split('\n').filter(Boolean)
+    const bn = new Set()
+    for (const l of lines) for (const m of l.matchAll(/_:c14n\d+/g)) bn.add(m[0])
+    const subj = new Set(lines.map((l) => l.split(' ')[0]).filter((s) => s.startsWith('_:')))
+    const objs = new Set(lines.map((l) => l.split(' ')[2]).filter((s) => s.startsWith('_:')))
+    return { quads: lines.length, blankNodes: bn.size, cyclic: [...subj].filter((s) => objs.has(s)).length > 0,
+             bytes: Buffer.byteLength(JSON.stringify(doc)) }
+  }
+
+  // 1) baseline
+  await measure('poison/baseline/normalize', VC_DOC, {}, Math.max(Math.floor(N / 2), 50))
+
+  // 2) family x size sweep with the library defaults (no call limit)
+  const SWEEP = {
+    complete: [3, 4, 5, 6, 7, 8],
+    cubic: [6, 8, 10, 12, 16],
+    ring: [8, 16, 32, 64, 128],
+    forest: [20, 100, 500],
+  }
+  for (const [fam, sizes] of Object.entries(SWEEP)) {
+    for (const n of sizes) {
+      const doc = FAMILIES[fam](n)
+      const key = `poison/${fam}-${n}/normalize`
+      try { meta[`${key}/shape`] = await shapeOf(doc) } catch (e) { meta[`${key}/shape`] = String(e.message || e) }
+      await measure(key, doc, {}, 200)
+    }
+  }
+
+  // 3) call-limit sweep (rdf-canonize maxDeepIterations)
+  const LIMITS = [1, 4, 16, 64]
+  const CASES = {
+    'legit-simple': { doc: VC_DOC, opts: {} },
+    'legit-bn10': { doc: synth(10), opts: {} },
+    'legit-bn50': { doc: synth(50), opts: {} },
+    'legit-ob3': { doc: null, opts: { documentLoader: loader } },   // filled below
+    'attack-complete-5': { doc: FAMILIES.complete(5), opts: {} },
+    'attack-complete-7': { doc: FAMILIES.complete(7), opts: {} },
+    'attack-cubic-10': { doc: FAMILIES.cubic(10), opts: {} },
+    'attack-ring-16': { doc: FAMILIES.ring(16), opts: {} },
+    'attack-ring-64': { doc: FAMILIES.ring(64), opts: {} },
+    'attack-forest-20': { doc: FAMILIES.forest(20), opts: {} },
+  }
+  if (!ob) delete CASES['legit-ob3']
+  else CASES['legit-ob3'].doc = {
+    '@context': ['https://www.w3.org/ns/credentials/v2', ob.CONTEXT_URL_V3_0_3],
+    id: 'urn:uuid:a63a60be-f4af-491c-87fc-2c8fd3007a58',
+    type: ['VerifiableCredential', 'OpenBadgeCredential'],
+    issuer: { id: 'https://university.example/issuers/565049', type: ['Profile'], name: 'Example University' },
+    validFrom: '2026-01-01T00:00:00Z',
+    credentialSubject: { id: 'did:example:ebfeb1f712ebc6f1c276e12ec21', type: ['AchievementSubject'],
+      achievement: { id: 'https://university.example/achievements/degree-cs', type: ['Achievement'],
+        name: 'Bachelor of Science in Computer Science',
+        criteria: { type: 'Criteria', narrative: 'Completion of 124 credit hours.' },
+        alignment: [{ type: ['Alignment'], targetName: 'CS Curriculum Standard', targetUrl: 'https://credentialengineregistry.org/resources/ce-6369c51f' }] },
+      result: [{ type: ['Result'], value: '3.7' }] },
+  }
+  for (const [label, { doc, opts }] of Object.entries(CASES)) {
+    for (const k of LIMITS) {
+      await measure(`poison/limit-k${k}/${label}`, doc, { ...opts, maxDeepIterations: k }, 100)
+    }
+  }
+}
+
+// ── security tests (attack vectors) ──────────────────────────────────────
+// Node-side replacement for the browser tests that previously lived in the
+// VC Format Comparison Tool. Each case records a verdict (rejected / accepted
+// / observed) rather than a latency, so that the evidence status of every row
+// in the security results table is produced by the same kit as the timings.
+async function runSecurity() {
+  const jsonld = (await import('jsonld')).default
+  const { encode: cborEncode, decode: cborDecode } = await import('cbor-x')
+  const sha256 = (b) => crypto.createHash('sha256').update(b).digest()
+  const verdicts = {}
+  const record = (key, verdict, detail) => {
+    verdicts[key] = { verdict, detail }
+    meta[`security/${key}`] = `${verdict}: ${detail}`
+    process.stderr.write(`  security/${key}: ${verdict} (${detail})\n`)
+  }
+
+  // ---- SD-JWT VC: alg:none ----------------------------------------------
+  {
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519')
+    const ALLOWED = ['EdDSA']
+    const verify = (token) => {
+      const [h, p, s] = token.split('.')
+      const hdr = JSON.parse(Buffer.from(h, 'base64url').toString())
+      if (!ALLOWED.includes(hdr.alg)) throw new Error(`alg not allowed: ${hdr.alg}`)
+      if (!crypto.verify(null, Buffer.from(`${h}.${p}`), publicKey, Buffer.from(s, 'base64url'))) {
+        throw new Error('bad signature')
+      }
+      return true
+    }
+    const payload = b64url(Buffer.from(JSON.stringify({ iss: 'https://issuer.example.com', vct: 'identity' })))
+    const good = (() => {
+      const h = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'vc+sd-jwt' })))
+      return `${h}.${payload}.${b64url(crypto.sign(null, Buffer.from(`${h}.${payload}`), privateKey))}`
+    })()
+    try { verify(good) } catch (e) { record('sdjwt/baseline', 'FAIL', `legitimate token rejected: ${e.message}`) }
+    const none = `${b64url(Buffer.from(JSON.stringify({ alg: 'none', typ: 'vc+sd-jwt' })))}.${payload}.`
+    try { verify(none); record('sdjwt/alg-none', 'ACCEPTED', 'unsigned token passed verification') }
+    catch (e) { record('sdjwt/alg-none', 'REJECTED', e.message) }
+    // algorithm confusion: an HMAC token whose key is the Ed25519 public key
+    const pubPem = publicKey.export({ type: 'spki', format: 'pem' })
+    const h2 = b64url(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'vc+sd-jwt' })))
+    const forged = `${h2}.${payload}.${b64url(crypto.createHmac('sha256', pubPem).update(`${h2}.${payload}`).digest())}`
+    try { verify(forged); record('sdjwt/alg-confusion', 'ACCEPTED', 'HMAC token forged with the public key passed') }
+    catch (e) { record('sdjwt/alg-confusion', 'REJECTED', e.message) }
+  }
+
+  // ---- mdoc: data element tampering and COSE header tampering -----------
+  {
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
+    const items = [['family_name', 'Yamada'], ['birth_date', '1990-01-01']]
+      .map(([k, v], i) => ({ digestID: i, random: crypto.randomBytes(16), elementIdentifier: k, elementValue: v }))
+    const encoded = items.map((it) => cborEncode(it))
+    const mso = cborEncode({ version: '1.0', digestAlgorithm: 'SHA-256', docType: 'org.iso.18013.5.1.mDL',
+      valueDigests: { 'org.iso.18013.5.1': Object.fromEntries(items.map((it, i) => [it.digestID, sha256(encoded[i])])) } })
+    const protectedHdr = cborEncode({ 1: -7 })
+    const sigStruct = (ph, payload) => cborEncode(['Signature1', ph, Buffer.alloc(0), payload])
+    const sig = crypto.sign('sha256', sigStruct(protectedHdr, mso), { key: privateKey, dsaEncoding: 'ieee-p1363' })
+    const verify = (ph, elems, msoBytes, signature) => {
+      if (!crypto.verify('sha256', sigStruct(ph, msoBytes), { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature)) {
+        throw new Error('COSE_Sign1 signature verification failed')
+      }
+      const digests = cborDecode(msoBytes).valueDigests['org.iso.18013.5.1']
+      for (const enc of elems) {
+        const it = cborDecode(enc)
+        if (!Buffer.from(digests[it.digestID]).equals(sha256(Buffer.from(enc)))) throw new Error('digest mismatch')
+      }
+      return true
+    }
+    try { verify(protectedHdr, encoded, mso, sig) } catch (e) { record('mdoc/baseline', 'FAIL', `legitimate mdoc rejected: ${e.message}`) }
+    const tampered = [...encoded]
+    tampered[0] = cborEncode({ ...cborDecode(encoded[0]), elementValue: 'Attacker' })
+    try { verify(protectedHdr, tampered, mso, sig); record('mdoc/element-tamper', 'ACCEPTED', 'modified element value was not detected') }
+    catch (e) { record('mdoc/element-tamper', 'REJECTED', e.message) }
+    const badHdr = cborEncode({ 1: -8 })   // claim EdDSA instead of ES256
+    try { verify(badHdr, encoded, mso, sig); record('mdoc/cose-header-tamper', 'ACCEPTED', 'modified protected header was not detected') }
+    catch (e) { record('mdoc/cose-header-tamper', 'REJECTED', e.message) }
+  }
+
+  // ---- W3C VCDM: context injection --------------------------------------
+  {
+    const OPTS = { algorithm: 'URDNA2015', format: 'application/n-quads', safe: false }
+    const honest = { '@context': [{ '@version': 1.1, name: 'http://schema.org/name' }],
+      '@id': 'https://example.com/c/1', name: 'Taro' }
+    const injected = { '@context': [{ '@version': 1.1, name: 'http://attacker.example.com/vocab#displayName' }],
+      '@id': 'https://example.com/c/1', name: 'Taro' }
+    const a = await jsonld.normalize(honest, OPTS)
+    let b, err = null
+    try { b = await jsonld.normalize(injected, OPTS) } catch (e) { err = e.message }
+    const iriOf = (nq) => (nq.match(/<([^>]+)>\s+"/) || [])[1]
+    if (err) record('vcdm/context-injection', 'REJECTED', err)
+    else record('vcdm/context-injection', iriOf(a) === iriOf(b) ? 'UNCHANGED' : 'OBSERVED',
+      `term IRI ${iriOf(a)} -> ${iriOf(b)}; canonicalization ${a === b ? 'identical' : 'differs'}`)
+  }
+
+  // ---- W3C VCDM: does the processor reach for an attacker-controlled URL?
+  // A recording document loader observes the request at the loader boundary
+  // without any packet leaving the process, so reachability is established by
+  // observation rather than by reading the source.
+  {
+    const OPTS = { algorithm: 'URDNA2015', format: 'application/n-quads', safe: false }
+    const requested = []
+    const recordingLoader = async (url) => { requested.push(url); throw new Error(`blocked: ${url}`) }
+    const evil = { '@context': ['http://169.254.169.254/latest/meta-data/'], '@id': 'https://example.com/c/1' }
+    try { await jsonld.normalize(evil, { ...OPTS, documentLoader: recordingLoader }) } catch { /* expected */ }
+    record('vcdm/ssrf-reachability', requested.length ? 'OBSERVED' : 'NOT-OBSERVED',
+      `loader was asked for: ${requested.join(', ') || '(nothing)'}`)
+  }
+  meta['security/verdicts'] = verdicts
+}
+
+// ── context loader comparison ────────────────────────────────────────────
+// Replaces the browser-mode measurement with three Node-side conditions: a
+// statically embedded context, a loader with an injected delay (the delay is
+// reported so the resulting gap is not mistaken for a measured network cost),
+// and a real retrieval over the loopback interface from a server this process
+// starts itself.
+async function runLoader() {
+  const jsonld = (await import('jsonld')).default
+  const http = await import('node:http')
+  const OPTS = { algorithm: 'URDNA2015', format: 'application/n-quads', safe: false }
+  const CTX_URL = 'https://ctx.example/v1'
+  const CTX_DOC = { '@context': { '@version': 1.1, type: '@type', id: '@id', name: 'http://schema.org/name' } }
+  const DOC = { '@context': CTX_URL, id: 'https://example.com/c/1', name: 'Taro' }
+  const DELAY_MS = Number(process.env.LOADER_DELAY_MS ?? 50)
+
+  const staticLoader = async (url) => {
+    if (url !== CTX_URL) throw new Error(`Context not embedded: ${url}`)
+    return { contextUrl: null, document: CTX_DOC, documentUrl: url }
+  }
+  const delayedLoader = async (url) => {
+    await new Promise((r) => setTimeout(r, DELAY_MS))
+    return staticLoader(url)
+  }
+
+  const server = http.createServer((_, res) => {
+    res.setHeader('content-type', 'application/ld+json')
+    res.end(JSON.stringify(CTX_DOC))
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const port = server.address().port
+  const LOOPBACK_URL = `http://127.0.0.1:${port}/v1`
+  const loopbackDoc = { ...DOC, '@context': LOOPBACK_URL }
+  const loopbackLoader = async (url) => {
+    const res = await fetch(url)
+    return { contextUrl: null, document: await res.json(), documentUrl: url }
+  }
+
+  const n = Math.max(Math.floor(N / 20), 20)
+  await benchAsync('loader/static/normalize', Math.max(Math.floor(N / 2), 50),
+    async () => { await jsonld.normalize(DOC, { ...OPTS, documentLoader: staticLoader }) })
+  await benchAsync('loader/delayed/normalize', n,
+    async () => { await jsonld.normalize(DOC, { ...OPTS, documentLoader: delayedLoader }) })
+  await benchAsync('loader/loopback/normalize', n,
+    async () => { await jsonld.normalize(loopbackDoc, { ...OPTS, documentLoader: loopbackLoader }) })
+  meta['loader/injectedDelayMs'] = DELAY_MS
+  meta['loader/note'] = 'delayed = static loader plus an injected delay of injectedDelayMs; loopback = real HTTP retrieval from a server started by this process (no external network)'
+  await new Promise((r) => server.close(r))
+}
+
 const RUNNERS = {
   sdjwt: runSdJwt,
   jsonld: runJsonLd,
@@ -751,6 +1067,9 @@ const RUNNERS = {
   seldisc: runSelDisc,
   unified: runUnified,
   e2e: runE2E,
+  poison: runPoison,
+  security: runSecurity,
+  loader: runLoader,
 }
 
 async function main() {

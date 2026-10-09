@@ -54,6 +54,9 @@ vcbench/
 | `seldisc` | ✓ (**node only**) | — | — | Selective disclosure 1/3/5/10/20 of 20 (Table 12) |
 | `unified` | ✓ (**node only**) | — | — | Ed25519-unified benchmark (mdoc uses COSE alg -8) (Table 13) |
 | `e2e` | ✓ (**node only**) | — | — | End-to-end issue → present → verify with selective disclosure (5 of 20 attributes). Unlike the per-format suites, every format includes disclosure creation and digest matching, so the measured scope is identical across formats. `full` times one issue → present → verify pass per iteration for every format (Table 6). |
+| `poison` | ✓ (**node only**) | — | — | Blank-node graph families (complete, 3-regular, bidirectional ring, and the acyclic forest produced by a generator that omits `@id`) swept over size, plus a sweep of the rdf-canonize call limit `maxDeepIterations`. Each condition records its outcome (completed / aborted by the limit / truncated by the time budget) and the shape of the input (quads, blank nodes, whether it is cyclic, bytes). |
+| `security` | ✓ (**node only**) | — | — | Attack vectors as verdicts rather than timings: alg:none and algorithm confusion against SD-JWT VC, data element and COSE protected header tampering against mdoc, term overriding through an unprotected `@context`, and SSRF reachability observed with a recording document loader that logs the requested URL without issuing any request. |
+| `loader` | ✓ (**node only**) | — | — | JSON-LD context loader comparison under three conditions: a statically embedded context, the same loader with an injected delay (reported separately so the gap is not read as a measured network cost), and a real HTTP retrieval over the loopback interface from a server this process starts. |
 
 The credential payloads and implementation approaches are identical to those described in
 Sections 4.2 and 4.3 of the paper.
