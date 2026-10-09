@@ -54,6 +54,10 @@ vcbench/
 | `seldisc` | ✓ (**node only**) | — | — | Selective disclosure 1/3/5/10/20 of 20 (Table 12) |
 | `unified` | ✓ (**node only**) | — | — | Ed25519-unified benchmark (mdoc uses COSE alg -8) (Table 13) |
 | `e2e` | ✓ (**node only**) | — | — | End-to-end issue → present → verify with selective disclosure (5 of 20 attributes). Unlike the per-format suites, every format includes disclosure creation and digest matching, so the measured scope is identical across formats. `full` times one issue → present → verify pass per iteration for every format (Table 6). |
+| `primitives` | ✓ (node:crypto) | ✓ (stdlib) | ✓ (cryptography) | Cryptographic primitive baseline: Ed25519 and ECDSA P-256 sign/verify and SHA-256 over a fixed 256-byte message, with no credential structure. Lets a cross-language difference in a format benchmark be attributed to the algorithm implementation rather than inferred. |
+| `e2e-ed25519` | ✓ (**node only**) | — | — | The `e2e` scenario with Ed25519 for all three formats (mdoc uses COSE alg -8). |
+| `e2e-p256` | ✓ (**node only**) | — | — | The `e2e` scenario with ECDSA P-256 for all three formats (SD-JWT VC uses ES256, Data Integrity uses ecdsa-rdfc-2019). Together with `e2e-ed25519` this separates the algorithm's contribution to the end-to-end totals from the pipeline's. |
+| `seldisc-sd` | ✓ (**node only**) | — | — | Selective disclosure that preserves the issuer signature, using the `ecdsa-sd-2023` Data Integrity cryptosuite (P-256): issue, derive and verify for 1/2/5/10/20 of 20 attributes. The `e2e` and `seldisc` suites use `eddsa-rdfc-2022`, which has no derivation step, so the holder re-signs the disclosed subset and the issuer signature does not survive; this suite is the like-for-like comparison against SD-JWT VC and mdoc. |
 | `poison` | ✓ (**node only**) | — | — | Blank-node graph families (complete, 3-regular, bidirectional ring, and the acyclic forest produced by a generator that omits `@id`) swept over size, plus a sweep of the rdf-canonize call limit `maxDeepIterations`. Each condition records its outcome (completed / aborted by the limit / truncated by the time budget) and the shape of the input (quads, blank nodes, whether it is cyclic, bytes). |
 | `security` | ✓ (**node only**) | — | — | Attack vectors as verdicts rather than timings: alg:none and algorithm confusion against SD-JWT VC, data element and COSE protected header tampering against mdoc, term overriding through an unprotected `@context`, and SSRF reachability observed with a recording document loader that logs the requested URL without issuing any request. |
 | `loader` | ✓ (**node only**) | — | — | JSON-LD context loader comparison under three conditions: a statically embedded context, the same loader with an injected delay (reported separately so the gap is not read as a measured network cost), and a real HTTP retrieval over the loopback interface from a server this process starts. |
@@ -220,6 +224,9 @@ machine-readable form used when updating the tables in the paper.
 | Table 11 / Figure 4 (attribute scaling) | `node :: scaling/<fmt>/<attributes>` (sizes in metadata) |
 | Table 12 / Figure 5 (selective disclosure) | `node :: seldisc/<fmt>/<disclosed>of20` |
 | Table 13 (Ed25519-unified) | `node :: unified/<fmt>/sign\|verify` |
+| Algorithm-unified end-to-end | `node :: e2e-ed25519/<fmt>/...`, `node :: e2e-p256/<fmt>/...` |
+| Issuer-signature-preserving selective disclosure | `node :: seldisc-sd/issue`, `seldisc-sd/disclose-<n>/derive\|verify` |
+| Cryptographic primitive baseline | `<lang> :: prim/ed25519\|p256/sign\|verify`, `prim/sha256` |
 
 Table 4 of the paper (execution environments) is populated from
 `results/<timestamp>/environment.txt` (CPU model, SMT/governor settings, and so on).
@@ -259,3 +266,15 @@ CPU_PIN="2" ./run-all.sh
 ## 10. License
 
 MIT License (see `LICENSE`).
+
+> **Data Integrity signing input.** The `jsonld` and `e2e` suites canonicalize the document *and*
+> the proof options and sign `sha256(proofOptionsNQuads) || sha256(documentNQuads)` (64 bytes), as
+> `eddsa-rdfc-2022` and `ecdsa-rdfc-2019` require. Earlier revisions canonicalized the document only,
+> which understated the cost of the cryptosuite. `jsonld/jsonld-lib/normalize-only` and
+> `normalize-both` report the two canonicalizations separately.
+>
+> **mdoc verification.** `mdoc/cbor-x/verify` and the `e2e` mdoc verification decode the CBOR,
+> reconstruct and verify the COSE_Sign1 `Sig_structure`, and match every disclosed element's digest
+> against the MSO **by `digestID`** (matching by position breaks on a disclosed subset). Every
+> benchmark checks its verification result and throws on failure, so a silently failing verification
+> cannot be reported as a fast one.

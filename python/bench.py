@@ -24,7 +24,7 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--format', default='all',
-                    choices=['sdjwt', 'jsonld', 'jsonld-jcs', 'mdoc', 'all'])
+                    choices=['sdjwt', 'jsonld', 'jsonld-jcs', 'mdoc', 'primitives', 'all'])
 parser.add_argument('--n', type=int, default=2000)
 parser.add_argument('--warmup', type=int, default=50)
 parser.add_argument('--out', default=None)
@@ -213,11 +213,39 @@ def run_mdoc():
     bench('mdoc/cbor2/verify', N, verify)
 
 
+def run_primitives():
+    """Cryptographic primitive baseline.
+
+    The per-format benchmarks mix a signature algorithm with a serialization
+    pipeline. Measuring the primitives alone lets a cross-language difference
+    be attributed to one or the other instead of being left as a conjecture.
+    """
+    from cryptography.hazmat.primitives.asymmetric import ed25519, ec
+    from cryptography.hazmat.primitives import hashes
+
+    msg = b'a' * 256
+
+    ed_priv = ed25519.Ed25519PrivateKey.generate()
+    ed_pub = ed_priv.public_key()
+    ed_sig = ed_priv.sign(msg)
+    bench('prim/ed25519/sign', args.n, lambda: ed_priv.sign(msg))
+    bench('prim/ed25519/verify', args.n, lambda: ed_pub.verify(ed_sig, msg))
+
+    ec_priv = ec.generate_private_key(ec.SECP256R1())
+    ec_pub = ec_priv.public_key()
+    ec_sig = ec_priv.sign(msg, ec.ECDSA(hashes.SHA256()))
+    bench('prim/p256/sign', args.n, lambda: ec_priv.sign(msg, ec.ECDSA(hashes.SHA256())))
+    bench('prim/p256/verify', args.n, lambda: ec_pub.verify(ec_sig, msg, ec.ECDSA(hashes.SHA256())))
+
+    bench('prim/sha256', args.n, lambda: hashlib.sha256(msg).digest())
+
+
 RUNNERS = {
     'sdjwt': run_sdjwt,
     'jsonld': run_jsonld,
     'jsonld-jcs': run_jcs,
     'mdoc': run_mdoc,
+    'primitives': run_primitives,
 }
 
 

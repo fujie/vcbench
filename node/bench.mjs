@@ -102,6 +102,43 @@ const VC_DOC = {
   credentialSubject: SUBJECT,
 }
 
+// ── shared helpers for Data Integrity (eddsa-rdfc-2022 / ecdsa-rdfc-2019) ──
+// The cryptosuite does NOT sign the canonicalized document directly. It
+// canonicalizes the document and the proof options separately and signs
+// sha256(proofOptionsNQuads) || sha256(documentNQuads) — 64 bytes. Measuring
+// only one canonicalization understates the cost of the suite, so both are
+// included here and in the end-to-end suite.
+const RDFC_OPTS = { algorithm: 'URDNA2015', format: 'application/n-quads', safe: false }
+const sha256b = (b) => crypto.createHash('sha256').update(b).digest()
+const SEC_NS = 'https://w3id.org/security#'
+// The proof-options context is embedded locally, like every other context in
+// this kit, so that no network retrieval occurs during measurement.
+const DI_PROOF_CTX = [{
+  '@version': 1.1, type: '@type', id: '@id',
+  DataIntegrityProof: `${SEC_NS}DataIntegrityProof`,
+  cryptosuite: `${SEC_NS}cryptosuite`,
+  created: { '@id': 'http://purl.org/dc/terms/created', '@type': 'http://www.w3.org/2001/XMLSchema#dateTime' },
+  verificationMethod: { '@id': `${SEC_NS}verificationMethod`, '@type': '@id' },
+  proofPurpose: { '@id': `${SEC_NS}proofPurpose`, '@type': '@vocab' },
+  assertionMethod: `${SEC_NS}assertionMethod`,
+}]
+const diProofOptions = (cryptosuite) => ({
+  '@context': DI_PROOF_CTX,
+  type: 'DataIntegrityProof',
+  cryptosuite,
+  created: '2024-01-01T00:00:00Z',
+  verificationMethod: 'did:example:issuer#key-1',
+  proofPurpose: 'assertionMethod',
+})
+// hashData = sha256(canonical proof options) || sha256(canonical document)
+async function diHashData(jsonld, doc, proofOptions) {
+  const [proofNQ, docNQ] = await Promise.all([
+    jsonld.normalize(proofOptions, RDFC_OPTS),
+    jsonld.normalize(doc, RDFC_OPTS),
+  ])
+  return Buffer.concat([sha256b(Buffer.from(proofNQ)), sha256b(Buffer.from(docNQ))])
+}
+
 // ── SD-JWT VC ────────────────────────────────────────────────────
 async function runSdJwt() {
   // stdcrypto: node:crypto directly (the "common to with/without library" implementation of the paper)
@@ -132,25 +169,34 @@ async function runSdJwt() {
   })
 }
 
-// ── JSON-LD VC (URDNA2015) ───────────────────────────────────────
+// ── W3C VCDM 2.0 + Data Integrity (eddsa-rdfc-2022, RDFC-1.0) ───
 async function runJsonLd() {
   const jsonld = (await import('jsonld')).default
   const { privateKey } = crypto.generateKeyPairSync('ed25519')
   const publicKey = crypto.createPublicKey(privateKey)
-  const normalize = () => jsonld.normalize(VC_DOC, { algorithm: 'URDNA2015', format: 'application/n-quads', safe: false })
+  const proofOptions = diProofOptions('eddsa-rdfc-2022')
+  const hashData = () => diHashData(jsonld, VC_DOC, proofOptions)
 
   await benchAsync('jsonld/jsonld-lib/sign', N, async () => {
-    const norm = await normalize()
-    crypto.sign(null, crypto.createHash('sha256').update(norm).digest(), privateKey)
+    crypto.sign(null, await hashData(), privateKey)
   })
-  const sig0 = crypto.sign(null, crypto.createHash('sha256').update(await normalize()).digest(), privateKey)
+  const sig0 = crypto.sign(null, await hashData(), privateKey)
   await benchAsync('jsonld/jsonld-lib/verify', N, async () => {
-    const norm = await normalize()
-    crypto.verify(null, crypto.createHash('sha256').update(norm).digest(), publicKey, sig0)
+    if (!crypto.verify(null, await hashData(), publicKey, sig0)) throw new Error('verify failed')
   })
-  await benchAsync('jsonld/jsonld-lib/normalize-only', N, async () => { await normalize() })
+  // the canonicalization of the document alone, for the breakdown in the paper
+  await benchAsync('jsonld/jsonld-lib/normalize-only', N, async () => {
+    await jsonld.normalize(VC_DOC, RDFC_OPTS)
+  })
+  // both canonicalizations, i.e. everything the suite does before hashing
+  await benchAsync('jsonld/jsonld-lib/normalize-both', N, async () => {
+    await jsonld.normalize(proofOptions, RDFC_OPTS)
+    await jsonld.normalize(VC_DOC, RDFC_OPTS)
+  })
 
-  // noLib: inline N-Quads
+  // noLib: statically expanded N-Quads. This is NOT a faster canonicalizer; it
+  // is the same pipeline with canonicalization removed, and is reported only as
+  // a lower bound on what the rest of the pipeline costs.
   const vc = { issuer: 'https://example.com', issuanceDate: '2024-01-01T00:00:00Z', credentialSubject: SUBJECT }
   const inlineNorm = () => {
     const s = '_:c14n0', sub = `<${vc.credentialSubject.id}>`
@@ -167,11 +213,11 @@ async function runJsonLd() {
   const kp2 = crypto.generateKeyPairSync('ed25519')
   const pub2 = crypto.createPublicKey(kp2.privateKey)
   bench('jsonld/nolib/sign', N, () => {
-    crypto.sign(null, crypto.createHash('sha256').update(inlineNorm()).digest(), kp2.privateKey)
+    crypto.sign(null, sha256b(inlineNorm()), kp2.privateKey)
   })
-  const sig1 = crypto.sign(null, crypto.createHash('sha256').update(inlineNorm()).digest(), kp2.privateKey)
+  const sig1 = crypto.sign(null, sha256b(inlineNorm()), kp2.privateKey)
   bench('jsonld/nolib/verify', N, () => {
-    crypto.verify(null, crypto.createHash('sha256').update(inlineNorm()).digest(), pub2, sig1)
+    if (!crypto.verify(null, sha256b(inlineNorm()), pub2, sig1)) throw new Error('verify failed')
   })
 }
 
@@ -207,32 +253,62 @@ const MDOC_FIELDS = [
   ['issue_date', '2024-01-01'], ['expiry_date', '2029-01-01'],
   ['issuing_country', 'JP'], ['document_number', 'JP-12345678'],
 ]
+const MDOC_NS = 'org.iso.18013.5.1'
 
 async function runMdoc() {
-  const { encode: cborEncode } = await import('cbor-x')
+  const { encode: cborEncode, decode: cborDecode } = await import('cbor-x')
   const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
 
-  const buildSigStructLib = () => {
-    const digestMap = new Map()
-    let id = 0
-    for (const [k, v] of MDOC_FIELDS) {
-      const item = cborEncode({ digestID: id, elementIdentifier: k, elementValue: v })
-      digestMap.set(id++, new Uint8Array(crypto.createHash('sha256').update(item).digest()))
-    }
-    const protHdr = cborEncode(new Map([[1, -7]]))
-    const msoPayload = cborEncode({ docType: 'org.iso.18013.5.1.mDL', valueDigests: digestMap })
-    return cborEncode(['Signature1', protHdr, new Uint8Array(0), msoPayload])
+  // IssuerSignedItem carries a random salt of at least 16 bytes (ISO/IEC
+  // 18013-5 9.1.2.5) so that an undisclosed element cannot be recovered from
+  // its digest; the MSO carries version, digestAlgorithm and validityInfo.
+  const buildIssued = () => {
+    const items = MDOC_FIELDS.map(([k, v], i) => ({
+      digestID: i, random: crypto.randomBytes(16), elementIdentifier: k, elementValue: v,
+    }))
+    const encoded = items.map((it) => cborEncode(it))
+    const digests = Object.fromEntries(items.map((it, i) => [it.digestID, sha256b(encoded[i])]))
+    const mso = cborEncode({
+      version: '1.0', digestAlgorithm: 'SHA-256', docType: `${MDOC_NS}.mDL`,
+      valueDigests: { [MDOC_NS]: digests },
+      validityInfo: { signed: '2024-01-01T00:00:00Z', validFrom: '2024-01-01T00:00:00Z', validUntil: '2029-01-01T00:00:00Z' },
+    })
+    const protectedHdr = cborEncode({ 1: -7 })
+    const sigStruct = cborEncode(['Signature1', protectedHdr, Buffer.alloc(0), mso])
+    const sig = crypto.sign('sha256', sigStruct, { key: privateKey, dsaEncoding: 'ieee-p1363' })
+    return cborEncode({
+      docType: `${MDOC_NS}.mDL`,
+      issuerSigned: { nameSpaces: { [MDOC_NS]: encoded }, issuerAuth: [protectedHdr, {}, mso, sig] },
+    })
   }
-  bench('mdoc/cbor-x/sign', N, () => {
-    crypto.sign('SHA256', buildSigStructLib(), { key: privateKey, dsaEncoding: 'ieee-p1363' })
-  })
-  const ss0 = buildSigStructLib()
-  const sig0 = crypto.sign('SHA256', ss0, { key: privateKey, dsaEncoding: 'ieee-p1363' })
-  bench('mdoc/cbor-x/verify', N, () => {
-    crypto.verify('SHA256', ss0, { key: publicKey, dsaEncoding: 'ieee-p1363' }, sig0)
-  })
 
-  // noLib: hand-written CBOR
+  // Verification follows ISO/IEC 18013-5 9.3.1: decode, verify COSE_Sign1 over
+  // the reconstructed Sig_structure, then match each element's digest against
+  // the MSO by digestID. Matching by position would break on a disclosed subset.
+  const verifyMdoc = (bytes) => {
+    const doc = cborDecode(bytes)
+    const [protectedHdr, , mso, sig] = doc.issuerSigned.issuerAuth
+    const sigStruct = cborEncode(['Signature1', protectedHdr, Buffer.alloc(0), mso])
+    if (!crypto.verify('sha256', sigStruct, { key: publicKey, dsaEncoding: 'ieee-p1363' }, sig)) {
+      throw new Error('COSE_Sign1 signature verification failed')
+    }
+    const digests = cborDecode(mso).valueDigests[MDOC_NS]
+    for (const enc of doc.issuerSigned.nameSpaces[MDOC_NS]) {
+      const it = cborDecode(enc)
+      if (!Buffer.from(digests[it.digestID]).equals(sha256b(Buffer.from(enc)))) {
+        throw new Error('digest mismatch')
+      }
+    }
+    return true
+  }
+
+  bench('mdoc/cbor-x/sign', N, () => { buildIssued() })
+  const issued = buildIssued()
+  bench('mdoc/cbor-x/verify', N, () => { verifyMdoc(issued) })
+  meta['mdoc/cbor-x/bytes'] = issued.length
+
+  // noLib: hand-written CBOR encoder for the signing side. The verification
+  // side is not reimplemented by hand; cbor-x is used for decoding in both.
   const cborUint = (n) => n <= 23 ? Buffer.from([n]) : n <= 0xff ? Buffer.from([0x18, n]) : Buffer.from([0x19, (n >> 8) & 0xff, n & 0xff])
   const cborNeg = (n) => { const x = -1 - n; return x <= 23 ? Buffer.from([0x20 | x]) : Buffer.from([0x38, x]) }
   const cborText = (s) => { const b = Buffer.from(s, 'utf8'); const h = b.length <= 23 ? Buffer.from([0x60 | b.length]) : Buffer.from([0x78, b.length]); return Buffer.concat([h, b]) }
@@ -244,19 +320,29 @@ async function runMdoc() {
     const digestMap = []
     for (let i = 0; i < MDOC_FIELDS.length; i++) {
       const [k, v] = MDOC_FIELDS[i]
-      const item = cborMap(cborUint(0), cborUint(i), cborText('elementIdentifier'), cborText(k), cborText('elementValue'), cborText(v))
-      digestMap.push(cborUint(i), cborBytes(crypto.createHash('sha256').update(item).digest()))
+      const item = cborMap(
+        cborText('digestID'), cborUint(i),
+        cborText('random'), cborBytes(crypto.randomBytes(16)),
+        cborText('elementIdentifier'), cborText(k),
+        cborText('elementValue'), cborText(v))
+      digestMap.push(cborUint(i), cborBytes(sha256b(item)))
     }
-    const msoPayload = cborMap(cborText('docType'), cborText('org.iso.18013.5.1.mDL'), cborText('valueDigests'), cborMap(...digestMap))
+    const msoPayload = cborMap(
+      cborText('version'), cborText('1.0'),
+      cborText('digestAlgorithm'), cborText('SHA-256'),
+      cborText('docType'), cborText(`${MDOC_NS}.mDL`),
+      cborText('valueDigests'), cborMap(...digestMap))
     return cborArray(cborText('Signature1'), cborBytes(protHdr), cborBytes(Buffer.alloc(0)), cborBytes(msoPayload))
   }
   bench('mdoc/nolib/sign', N, () => {
-    crypto.sign('SHA256', buildSigStructManual(), { key: privateKey, dsaEncoding: 'ieee-p1363' })
+    crypto.sign('sha256', buildSigStructManual(), { key: privateKey, dsaEncoding: 'ieee-p1363' })
   })
   const ss1 = buildSigStructManual()
-  const sig1 = crypto.sign('SHA256', ss1, { key: privateKey, dsaEncoding: 'ieee-p1363' })
+  const sig1 = crypto.sign('sha256', ss1, { key: privateKey, dsaEncoding: 'ieee-p1363' })
   bench('mdoc/nolib/verify', N, () => {
-    crypto.verify('SHA256', ss1, { key: publicKey, dsaEncoding: 'ieee-p1363' }, sig1)
+    if (!crypto.verify('sha256', ss1, { key: publicKey, dsaEncoding: 'ieee-p1363' }, sig1)) {
+      throw new Error('verify failed')
+    }
   })
 }
 
@@ -595,11 +681,31 @@ async function runUnified() {
 }
 
 // ── main ─────────────────────────────────────────────────────────
-// ── e2e: end-to-end issue -> present -> verify, with selective disclosure ──
-// Reviewer note: the per-format main benchmarks cover different scopes (SD-JWT VC
-// excludes disclosure creation/matching). This suite measures the same scenario for
-// every format: issue a 20-attribute credential, disclose 5 attributes, verify.
-async function runE2E() {
+// ── end-to-end: issue -> present (5 of 20 disclosed) -> verify ───
+// Parameterised by signature algorithm so that the same scenario can be run
+// with each format's native choice (the configuration deployments actually
+// use) and with a single algorithm across all three, which separates the
+// algorithm's contribution from the pipeline's.
+function makeAlg(kind) {
+  if (kind === 'ed25519') {
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519')
+    return {
+      jwsAlg: 'EdDSA', coseAlg: -8, diSuite: 'eddsa-rdfc-2022',
+      sign: (buf) => crypto.sign(null, buf, privateKey),
+      verify: (buf, sig) => crypto.verify(null, buf, publicKey, sig),
+    }
+  }
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
+  const o = { key: privateKey, dsaEncoding: 'ieee-p1363' }
+  const v = { key: publicKey, dsaEncoding: 'ieee-p1363' }
+  return {
+    jwsAlg: 'ES256', coseAlg: -7, diSuite: 'ecdsa-rdfc-2019',
+    sign: (buf) => crypto.sign('sha256', buf, o),
+    verify: (buf, sig) => crypto.verify('sha256', buf, v, sig),
+  }
+}
+
+async function runE2EWith(prefix, algFor) {
   const { encode: cborEncode, decode: cborDecode } = await import('cbor-x')
   const jsonld = (await import('jsonld')).default
   const TOTAL = 20, DISCLOSE = 5
@@ -609,54 +715,55 @@ async function runE2E() {
   const CRED_ID = 'urn:example:cred:e2e'
   const ISSUER_ID = 'did:example:issuer'
   const SUBJ_ID = 'did:example:subject:001'
-  const sha256 = (b) => crypto.createHash('sha256').update(b).digest()
 
-  // ---- SD-JWT VC (Ed25519) : issue = sign + build disclosures, verify = JWS + digest match
+  // ---- SD-JWT VC : issue = sign + build disclosures, verify = JWS + digest match
   {
-    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519')
+    const A = algFor('sdjwt')
     const mkDisclosure = (k, v) => {
       const salt = b64url(crypto.randomBytes(16))
       const d = b64url(Buffer.from(JSON.stringify([salt, k, v])))
-      return { d, hash: b64url(sha256(Buffer.from(d))) }
+      return { d, hash: b64url(sha256b(Buffer.from(d))) }
     }
     const issue = () => {
       const ds = entries.map(([k, v]) => mkDisclosure(k, v))
-      const header = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'vc+sd-jwt' })))
+      const header = b64url(Buffer.from(JSON.stringify({ alg: A.jwsAlg, typ: 'vc+sd-jwt' })))
       const payload = b64url(Buffer.from(JSON.stringify({
         iss: ISSUER_ID, sub: SUBJ_ID, vct: 'https://example.com/vct', iat: 1714000000,
         _sd_alg: 'sha-256', _sd: ds.map((x) => x.hash),
       })))
       const input = `${header}.${payload}`
-      const sig = b64url(crypto.sign(null, Buffer.from(input), privateKey))
-      return { token: `${input}.${sig}`, ds }
+      return { token: `${input}.${b64url(A.sign(Buffer.from(input)))}`, ds }
     }
     const issued = issue()
     const present = (o) => `${o.token}~${o.ds.slice(0, DISCLOSE).map((x) => x.d).join('~')}~`
     const presented = present(issued)
     const verify = (vp) => {
       const [token, ...disclosures] = vp.split('~').filter(Boolean)
-      const [h, p, s] = token.split('.')
-      if (!crypto.verify(null, Buffer.from(`${h}.${p}`), publicKey, Buffer.from(s, 'base64url'))) {
-        throw new Error('bad signature')
-      }
+      const [h, p, sg] = token.split('.')
+      if (!A.verify(Buffer.from(`${h}.${p}`), Buffer.from(sg, 'base64url'))) throw new Error('bad signature')
       const payload = JSON.parse(Buffer.from(p, 'base64url').toString())
       const set = new Set(payload._sd)
       for (const d of disclosures) {
-        if (!set.has(b64url(sha256(Buffer.from(d))))) throw new Error('digest mismatch')
+        if (!set.has(b64url(sha256b(Buffer.from(d))))) throw new Error('digest mismatch')
         JSON.parse(Buffer.from(d, 'base64url').toString())
       }
       return true
     }
-    bench('e2e/sdjwt/issue', N, () => issue())
-    bench('e2e/sdjwt/present', N, () => present(issued))
-    bench('e2e/sdjwt/verify', N, () => verify(presented))
-    bench('e2e/sdjwt/full', N, () => verify(present(issue())))
-    meta['e2e/sdjwt/vpBytes'] = Buffer.byteLength(presented)
+    if (verify(presented) !== true) throw new Error('sdjwt self-check failed')
+    bench(`${prefix}/sdjwt/issue`, N, () => issue())
+    bench(`${prefix}/sdjwt/present`, N, () => present(issued))
+    bench(`${prefix}/sdjwt/verify`, N, () => verify(presented))
+    bench(`${prefix}/sdjwt/full`, N, () => verify(present(issue())))
+    meta[`${prefix}/sdjwt/vpBytes`] = Buffer.byteLength(presented)
   }
 
-  // ---- VCDM 2.0 + Data Integrity : issue/verify over RDFC-1.0 canonicalized N-Quads
+  // ---- VCDM 2.0 + Data Integrity : both canonicalizations, 64-byte hashData
+  // eddsa-rdfc-2022 has no selective disclosure, so presenting a subset means
+  // re-canonicalizing and re-signing it: the verifier then checks the holder's
+  // signature, not the issuer's. The guarantee differs from the other two
+  // formats and is reported as such in the paper.
   {
-    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519')
+    const A = algFor('vcdm')
     const E2E_CONTEXT = [...VC_CONTEXT, { '@vocab': VOCAB }]
     const docOf = (pairs) => ({
       '@context': E2E_CONTEXT,
@@ -665,53 +772,49 @@ async function runE2E() {
     })
     const fullDoc = docOf(entries)
     const subsetDoc = docOf(shown)
-    const opts = { algorithm: 'URDNA2015', format: 'application/n-quads' }
-    const issue = async () => {
-      const nq = await jsonld.normalize(fullDoc, opts)
-      return crypto.sign(null, sha256(Buffer.from(nq)), privateKey)
-    }
-    const sigFull = await issue()
-    // presenting a subset requires re-issuing the derived credential (no unlinkable derivation)
-    const present = async () => {
-      const nq = await jsonld.normalize(subsetDoc, opts)
-      return { nq, sig: crypto.sign(null, sha256(Buffer.from(nq)), privateKey) }
-    }
+    const proofOptions = diProofOptions(A.diSuite)
+    const issue = async () => A.sign(await diHashData(jsonld, fullDoc, proofOptions))
+    const present = async () => ({ sig: A.sign(await diHashData(jsonld, subsetDoc, proofOptions)) })
     const vp = await present()
     const verify = async (p) => {
-      const nq = await jsonld.normalize(subsetDoc, opts)
-      return crypto.verify(null, sha256(Buffer.from(nq)), publicKey, p.sig)
+      if (!A.verify(await diHashData(jsonld, subsetDoc, proofOptions), p.sig)) throw new Error('verify failed')
+      return true
     }
-    await benchAsync('e2e/jsonld/issue', N, async () => { await issue() })
-    await benchAsync('e2e/jsonld/present', N, async () => { await present() })
-    await benchAsync('e2e/jsonld/verify', N, async () => { await verify(vp) })
-    await benchAsync('e2e/jsonld/full', N, async () => { await issue(); await verify(await present()) })
-    meta['e2e/jsonld/vpBytes'] = Buffer.byteLength(vp.nq)
-    void sigFull
+    if (await verify(vp) !== true) throw new Error('vcdm self-check failed')
+    await benchAsync(`${prefix}/jsonld/issue`, N, async () => { await issue() })
+    await benchAsync(`${prefix}/jsonld/present`, N, async () => { await present() })
+    await benchAsync(`${prefix}/jsonld/verify`, N, async () => { await verify(vp) })
+    await benchAsync(`${prefix}/jsonld/full`, N, async () => { await issue(); await verify(await present()) })
+    const subsetNQ = await jsonld.normalize(subsetDoc, RDFC_OPTS)
+    meta[`${prefix}/jsonld/vpBytes`] = Buffer.byteLength(JSON.stringify({ ...subsetDoc, proof: { ...proofOptions, proofValue: b64url(vp.sig) } }))
+    meta[`${prefix}/jsonld/signingInputBytes`] = Buffer.byteLength(subsetNQ)
+    meta[`${prefix}/jsonld/disclosureGuarantee`] = 'holder re-signs the disclosed subset; the issuer signature does not survive'
   }
 
-  // ---- mdoc : issue = per-element digests + MSO + COSE_Sign1, verify = COSE + digest match
+  // ---- mdoc : issue = per-element digests + MSO + COSE_Sign1,
+  //      verify = CBOR decode + COSE_Sign1 + per-element digest match by digestID
   {
-    const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
+    const A = algFor('mdoc')
     const items = entries.map(([k, v], i) => ({
       digestID: i, random: crypto.randomBytes(16), elementIdentifier: k, elementValue: v,
     }))
     const issue = () => {
       const encoded = items.map((it) => cborEncode(it))
-      const digests = new Map(items.map((it, i) => [it.digestID, sha256(encoded[i])]))
+      const digests = Object.fromEntries(items.map((it, i) => [it.digestID, sha256b(encoded[i])]))
       const mso = cborEncode({
-        version: '1.0', digestAlgorithm: 'SHA-256', docType: 'org.iso.18013.5.1.mDL',
-        valueDigests: { 'org.iso.18013.5.1': Object.fromEntries(digests) },
+        version: '1.0', digestAlgorithm: 'SHA-256', docType: `${MDOC_NS}.mDL`,
+        valueDigests: { [MDOC_NS]: digests },
+        validityInfo: { signed: '2024-01-01T00:00:00Z', validFrom: '2024-01-01T00:00:00Z', validUntil: '2029-01-01T00:00:00Z' },
       })
-      const protectedHdr = cborEncode({ 1: -7 })
+      const protectedHdr = cborEncode({ 1: A.coseAlg })
       const sigStruct = cborEncode(['Signature1', protectedHdr, Buffer.alloc(0), mso])
-      const sig = crypto.sign('sha256', sigStruct, { key: privateKey, dsaEncoding: 'ieee-p1363' })
-      return { encoded, mso, protectedHdr, sig }
+      return { encoded, mso, protectedHdr, sig: A.sign(sigStruct) }
     }
     const issued = issue()
     const present = (o) => cborEncode({
-      docType: 'org.iso.18013.5.1.mDL',
+      docType: `${MDOC_NS}.mDL`,
       issuerSigned: {
-        nameSpaces: { 'org.iso.18013.5.1': o.encoded.slice(0, DISCLOSE) },
+        nameSpaces: { [MDOC_NS]: o.encoded.slice(0, DISCLOSE) },
         issuerAuth: [o.protectedHdr, {}, o.mso, o.sig],
       },
     })
@@ -720,23 +823,160 @@ async function runE2E() {
       const doc = cborDecode(vpBytes)
       const [protectedHdr, , mso, sig] = doc.issuerSigned.issuerAuth
       const sigStruct = cborEncode(['Signature1', protectedHdr, Buffer.alloc(0), mso])
-      if (!crypto.verify('sha256', sigStruct, { key: publicKey, dsaEncoding: 'ieee-p1363' }, sig)) {
-        throw new Error('bad signature')
-      }
-      const digests = cborDecode(mso).valueDigests['org.iso.18013.5.1']
-      for (const enc of doc.issuerSigned.nameSpaces['org.iso.18013.5.1']) {
+      if (!A.verify(sigStruct, sig)) throw new Error('bad signature')
+      const digests = cborDecode(mso).valueDigests[MDOC_NS]
+      for (const enc of doc.issuerSigned.nameSpaces[MDOC_NS]) {
         const it = cborDecode(enc)
-        const expected = Buffer.from(digests[it.digestID])
-        if (!expected.equals(sha256(Buffer.from(enc)))) throw new Error('digest mismatch')
+        if (!Buffer.from(digests[it.digestID]).equals(sha256b(Buffer.from(enc)))) throw new Error('digest mismatch')
       }
       return true
     }
-    bench('e2e/mdoc/issue', N, () => issue())
-    bench('e2e/mdoc/present', N, () => present(issued))
-    bench('e2e/mdoc/verify', N, () => verify(presented))
-    bench('e2e/mdoc/full', N, () => verify(present(issue())))
-    meta['e2e/mdoc/vpBytes'] = presented.length
+    if (verify(presented) !== true) throw new Error('mdoc self-check failed')
+    bench(`${prefix}/mdoc/issue`, N, () => issue())
+    bench(`${prefix}/mdoc/present`, N, () => present(issued))
+    bench(`${prefix}/mdoc/verify`, N, () => verify(presented))
+    bench(`${prefix}/mdoc/full`, N, () => verify(present(issue())))
+    meta[`${prefix}/mdoc/vpBytes`] = presented.length
   }
+}
+
+// native: each format's own default (SD-JWT VC and VCDM on Ed25519, mdoc on P-256)
+const NATIVE = { sdjwt: 'ed25519', vcdm: 'ed25519', mdoc: 'p256' }
+async function runE2E() {
+  const cache = {}
+  await runE2EWith('e2e', (f) => (cache[NATIVE[f]] ??= makeAlg(NATIVE[f])))
+}
+async function runE2EEd25519() {
+  const a = makeAlg('ed25519')
+  await runE2EWith('e2e-ed25519', () => a)
+}
+async function runE2EP256() {
+  const a = makeAlg('p256')
+  await runE2EWith('e2e-p256', () => a)
+}
+
+// ── selective disclosure that preserves the issuer signature (ecdsa-sd-2023) ──
+// eddsa-rdfc-2022 has no derivation step, so the e2e suite above has the holder
+// re-sign the disclosed subset and the issuer signature does not survive. This
+// suite measures the Data Integrity cryptosuite that does preserve it, so that
+// the comparison with SD-JWT VC and mdoc is between mechanisms offering the
+// same guarantee. Pointers follow RFC 6901 (JSON Pointer).
+async function runSelDiscSd() {
+  let jsigs, DataIntegrityProof, EcdsaMultikey, sd, credCtx, diCtx, mkCtx
+  try {
+    jsigs = (await import('jsonld-signatures')).default
+    ;({ DataIntegrityProof } = await import('@digitalbazaar/data-integrity'))
+    EcdsaMultikey = await import('@digitalbazaar/ecdsa-multikey')
+    sd = await import('@digitalbazaar/ecdsa-sd-2023-cryptosuite')
+    credCtx = await import('@digitalbazaar/credentials-context')
+    diCtx = await import('@digitalbazaar/data-integrity-context')
+    mkCtx = await import('@digitalbazaar/multikey-context')
+  } catch (e) {
+    process.stderr.write(`  [seldisc-sd] skipped, packages unavailable: ${e.message}\n`)
+    meta['seldisc-sd/skipped'] = String(e.message)
+    return
+  }
+  const { purposes: { AssertionProofPurpose } } = jsigs
+
+  const ctxMap = new Map()
+  for (const mod of [credCtx, diCtx, mkCtx]) {
+    const contexts = (mod.default ?? mod).contexts
+    for (const [u, d] of contexts) ctxMap.set(u, d)
+  }
+  let KEYDOC = null
+  const documentLoader = async (url) => {
+    if (ctxMap.has(url)) return { contextUrl: null, document: ctxMap.get(url), documentUrl: url }
+    if (KEYDOC && url === KEYDOC.id) return { contextUrl: null, document: KEYDOC, documentUrl: url }
+    if (KEYDOC && url === KEYDOC.controller) {
+      return { contextUrl: null, documentUrl: url, document: {
+        '@context': ['https://www.w3.org/ns/did/v1', 'https://w3id.org/security/multikey/v1'],
+        id: KEYDOC.controller, assertionMethod: [KEYDOC],
+      } }
+    }
+    throw new Error(`Context not embedded: ${url}`)
+  }
+
+  const TOTAL = 20
+  const kp = await EcdsaMultikey.generate({
+    curve: 'P-256', id: 'did:example:issuer#key-1', controller: 'did:example:issuer',
+  })
+  KEYDOC = await kp.export({ publicKey: true, includeContext: true })
+
+  const credential = {
+    '@context': ['https://www.w3.org/ns/credentials/v2', { '@vocab': VOCAB }],
+    type: ['VerifiableCredential'],
+    issuer: 'did:example:issuer',
+    credentialSubject: { id: 'did:example:subject:001', ...makeAttrs(TOTAL) },
+  }
+
+  const signSuite = () => new DataIntegrityProof({
+    signer: kp.signer(),
+    cryptosuite: sd.createSignCryptosuite({ mandatoryPointers: ['/issuer'] }),
+  })
+  const issue = async () => jsigs.sign(structuredClone(credential), {
+    suite: signSuite(), purpose: new AssertionProofPurpose(), documentLoader,
+  })
+  const base = await issue()
+  meta['seldisc-sd/baseBytes'] = Buffer.byteLength(JSON.stringify(base))
+
+  const deriveSuite = (n) => new DataIntegrityProof({
+    cryptosuite: sd.createDiscloseCryptosuite({
+      selectivePointers: Array.from({ length: n }, (_, i) => `/credentialSubject/attr_${String(i).padStart(3, '0')}`),
+    }),
+  })
+  const derive = async (n) => jsigs.derive(base, {
+    suite: deriveSuite(n), purpose: new AssertionProofPurpose(), documentLoader,
+  })
+  const verifySuite = () => new DataIntegrityProof({ cryptosuite: sd.createVerifyCryptosuite() })
+  const verify = async (doc) => {
+    const r = await jsigs.verify(doc, {
+      suite: verifySuite(), purpose: new AssertionProofPurpose(), documentLoader,
+    })
+    if (!r.verified) throw new Error(`verify failed: ${r.error?.errors?.[0]?.message ?? 'unknown'}`)
+    return true
+  }
+
+  // issuance is independent of the number disclosed; measured once
+  const NSD = Math.max(Math.floor(N / 20), 20)
+  await benchAsync('seldisc-sd/issue', NSD, async () => { await issue() })
+
+  for (const n of [1, 2, 5, 10, 20]) {
+    const derived = await derive(n)
+    if (await verify(derived) !== true) throw new Error('seldisc-sd self-check failed')
+    meta[`seldisc-sd/disclose-${n}/vpBytes`] = Buffer.byteLength(JSON.stringify(derived))
+    await benchAsync(`seldisc-sd/disclose-${n}/derive`, NSD, async () => { await derive(n) })
+    await benchAsync(`seldisc-sd/disclose-${n}/verify`, NSD, async () => { await verify(derived) })
+  }
+  meta['seldisc-sd/note'] =
+    'ecdsa-sd-2023 (P-256): the issuer signature survives derivation, unlike the eddsa-rdfc-2022 path in the e2e suite'
+}
+
+// ── cryptographic primitive baseline ────────────────────────────
+// The per-format benchmarks mix a signature algorithm with a serialization
+// pipeline, so a cross-language difference in one format cannot be attributed
+// to either without a baseline. This suite measures the primitives alone, with
+// no credential structure around them.
+async function runPrimitives() {
+  const msg = Buffer.from('a'.repeat(256))
+  const ed = crypto.generateKeyPairSync('ed25519')
+  const edPub = crypto.createPublicKey(ed.privateKey)
+  const edSig = crypto.sign(null, msg, ed.privateKey)
+  bench('prim/ed25519/sign', N, () => { crypto.sign(null, msg, ed.privateKey) })
+  bench('prim/ed25519/verify', N, () => {
+    if (!crypto.verify(null, msg, edPub, edSig)) throw new Error('verify failed')
+  })
+
+  const ec = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
+  const ecPriv = { key: ec.privateKey, dsaEncoding: 'ieee-p1363' }
+  const ecPub = { key: crypto.createPublicKey(ec.privateKey), dsaEncoding: 'ieee-p1363' }
+  const ecSig = crypto.sign('sha256', msg, ecPriv)
+  bench('prim/p256/sign', N, () => { crypto.sign('sha256', msg, ecPriv) })
+  bench('prim/p256/verify', N, () => {
+    if (!crypto.verify('sha256', msg, ecPub, ecSig)) throw new Error('verify failed')
+  })
+
+  bench('prim/sha256', N, () => { sha256b(msg) })
+  meta['prim/messageBytes'] = msg.length
 }
 
 // ── poison graph / call-limit suite ──────────────────────────────────────
@@ -1057,6 +1297,7 @@ async function runLoader() {
 
 const RUNNERS = {
   sdjwt: runSdJwt,
+  primitives: runPrimitives,
   jsonld: runJsonLd,
   'jsonld-jcs': runJcs,
   mdoc: runMdoc,
@@ -1065,8 +1306,11 @@ const RUNNERS = {
   serial: runSerial,
   scaling: runScaling,
   seldisc: runSelDisc,
+  'seldisc-sd': runSelDiscSd,
   unified: runUnified,
   e2e: runE2E,
+  'e2e-ed25519': runE2EEd25519,
+  'e2e-p256': runE2EP256,
   poison: runPoison,
   security: runSecurity,
   loader: runLoader,

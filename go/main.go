@@ -30,7 +30,7 @@ import (
 )
 
 var (
-	formatFlag = flag.String("format", "all", "sdjwt|jsonld|jsonld-jcs|mdoc|all")
+	formatFlag = flag.String("format", "all", "sdjwt|jsonld|jsonld-jcs|mdoc|primitives|all")
 	nFlag      = flag.Int("n", 2000, "iterations per benchmark")
 	warmupFlag = flag.Int("warmup", 50, "warmup iterations")
 	outFlag    = flag.String("out", "", "output JSON file (default: stdout)")
@@ -240,16 +240,50 @@ func runMdoc() {
 	})
 }
 
+// ── cryptographic primitive baseline ─────────────────────────────
+// Measures the signature primitives alone so that a cross-language difference
+// in a format benchmark can be attributed to the algorithm implementation or
+// to the serialization pipeline rather than left as a conjecture.
+func runPrimitives() {
+	msg := []byte(strings.Repeat("a", 256))
+
+	edPub, edPriv, _ := ed25519.GenerateKey(rand.Reader)
+	edSig := ed25519.Sign(edPriv, msg)
+	bench("prim/ed25519/sign", *nFlag, func() { _ = ed25519.Sign(edPriv, msg) })
+	bench("prim/ed25519/verify", *nFlag, func() {
+		if !ed25519.Verify(edPub, msg, edSig) {
+			panic("verify failed")
+		}
+	})
+
+	ecPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	digest := sha256.Sum256(msg)
+	ecSig, _ := ecdsa.SignASN1(rand.Reader, ecPriv, digest[:])
+	bench("prim/p256/sign", *nFlag, func() {
+		d := sha256.Sum256(msg)
+		_, _ = ecdsa.SignASN1(rand.Reader, ecPriv, d[:])
+	})
+	bench("prim/p256/verify", *nFlag, func() {
+		d := sha256.Sum256(msg)
+		if !ecdsa.VerifyASN1(&ecPriv.PublicKey, d[:], ecSig) {
+			panic("verify failed")
+		}
+	})
+
+	bench("prim/sha256", *nFlag, func() { _ = sha256.Sum256(msg) })
+}
+
 // ── main ─────────────────────────────────────────────────────────
 func main() {
 	flag.Parse()
 	runners := map[string]func(){
 		"sdjwt":      runSdJwt,
+		"primitives": runPrimitives,
 		"jsonld":     runJsonLd,
 		"jsonld-jcs": runJcs,
 		"mdoc":       runMdoc,
 	}
-	order := []string{"sdjwt", "jsonld", "jsonld-jcs", "mdoc"}
+	order := []string{"sdjwt", "jsonld", "jsonld-jcs", "mdoc", "primitives"}
 
 	var targets []string
 	if *formatFlag == "all" {

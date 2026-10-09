@@ -13,14 +13,18 @@ RUNS=${RUNS:-5}
 LANGS=${LANGS-"node go python"}
 
 # formats to measure (space separated):
-#   sdjwt jsonld jsonld-jcs mdoc (supported by all languages)
-FORMATS=${FORMATS-"sdjwt jsonld jsonld-jcs mdoc"}
+#   sdjwt jsonld jsonld-jcs mdoc primitives (supported by all languages)
+#   primitives = cryptographic primitive baseline (Ed25519 / P-256 / SHA-256 alone)
+FORMATS=${FORMATS-"sdjwt jsonld jsonld-jcs mdoc primitives"}
 
 # node-only additional suites (leave empty to disable):
 #   jsonld-complex (complex credentials)  breakdown (signing breakdown)  serial (serialization)
 #   scaling (attribute scaling)  seldisc (selective disclosure)  unified (Ed25519-unified)
 #   e2e (end-to-end issue -> present -> verify, 5 of 20 attributes disclosed)
-NODE_EXTRA_FORMATS=${NODE_EXTRA_FORMATS-"jsonld-complex breakdown serial scaling seldisc unified e2e"}
+#   e2e-ed25519 / e2e-p256 (the same scenario with one algorithm across all three formats)
+#   seldisc-sd (ecdsa-sd-2023: selective disclosure that preserves the issuer signature)
+#   poison security loader (security suites; see the security paper)
+NODE_EXTRA_FORMATS=${NODE_EXTRA_FORMATS-"jsonld-complex breakdown serial scaling seldisc seldisc-sd unified e2e e2e-ed25519 e2e-p256"}
 
 # CPU pinning (e.g. "0" or "2,3"; empty disables it)
 # On bare metal, pinning to a dedicated core avoids interference from other processes
