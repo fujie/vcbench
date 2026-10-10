@@ -178,7 +178,7 @@ node aggregate.mjs results/ results/summary
 ```json
 {
   "lang": "node", "format": "sdjwt", "n": 2000, "warmup": 50,
-  "env": { "node": "v24.18.0", "libraries": { "jose": "6.2.3", ... }, ... },
+  "env": { "node": "v24.18.0", "libraries": { "jose": "6.2.8", ... }, ... },
   "benches": {
     "sdjwt/stdcrypto/sign": { "n": 2000, "warmup": 50, "timings_ns": [26208, ...] }
   }
@@ -231,7 +231,7 @@ node aggregate.mjs results/ results/summary
 | ハードウェア | AMD EPYC 7763 (x86_64)。4 vCPU中2コアをオフライン化しSMT無効、tasksetで単一コアに固定 |
 | OS | Ubuntu Linux (kernel 6.17.0-azure) |
 | ランタイム | Node.js v24.18.0 (OpenSSL 3.5.7) / Go 1.22.2 / Python 3.12.3 |
-| ライブラリ | jose 6.2.3, jsonld 8.3.3 (rdf-canonize 3.4.0), cbor-x 1.6.4, canonicalize 1.0.8, PyLD 3.1.0, cbor2 6.1.3, cryptography 49.0.0, piprate/json-gold v0.8.0, fxamacker/cbor v2.9.2 |
+| ライブラリ | jose 6.2.8, jsonld 8.3.3 (rdf-canonize 3.4.0), cbor-x 1.6.5, canonicalize 1.0.8, PyLD 3.3.0, cbor2 6.1.5, cryptography 50.0.2, piprate/json-gold v0.8.0, fxamacker/cbor v2.9.2 |
 | パラメータ | N=2,000 / ウォームアップ50回 / 独立5回実行 |
 | 環境B（再現性確認） | Intel Celeron N5095（2コア, x86_64）、SMT非対応、governor `performance`、turbo無効。Linux kernel 7.0.0-38-generic。Node.js v22.22.1 / Go 1.26.0 / Python 3.14.4 |
 

@@ -193,7 +193,7 @@ node aggregate.mjs results/ results/summary
 ```json
 {
   "lang": "node", "format": "sdjwt", "n": 2000, "warmup": 50,
-  "env": { "node": "v24.18.0", "libraries": { "jose": "6.2.3", ... }, ... },
+  "env": { "node": "v24.18.0", "libraries": { "jose": "6.2.8", ... }, ... },
   "benches": {
     "sdjwt/stdcrypto/sign": { "n": 2000, "warmup": 50, "timings_ns": [26208, ...] }
   }
@@ -253,7 +253,7 @@ following conditions (Environment A; Environment B is the bare-metal cross-check
 | Hardware | AMD EPYC 7763 (x86_64); 2 of 4 vCPUs taken offline with SMT disabled, measurement process pinned to a single core with taskset |
 | OS | Ubuntu Linux (kernel 6.17.0-azure) |
 | Runtimes | Node.js v24.18.0 (OpenSSL 3.5.7) / Go 1.22.2 / Python 3.12.3 |
-| Libraries | jose 6.2.3, jsonld 8.3.3 (rdf-canonize 3.4.0), cbor-x 1.6.4, canonicalize 1.0.8, PyLD 3.1.0, cbor2 6.1.3, cryptography 49.0.0, piprate/json-gold v0.8.0, fxamacker/cbor v2.9.2 |
+| Libraries | jose 6.2.8, jsonld 8.3.3 (rdf-canonize 3.4.0), cbor-x 1.6.5, canonicalize 1.0.8, PyLD 3.3.0, cbor2 6.1.5, cryptography 50.0.2, piprate/json-gold v0.8.0, fxamacker/cbor v2.9.2 |
 | Parameters | N=2,000 / 50 warmup iterations / 5 independent runs |
 | Environment B (cross-check) | Intel Celeron N5095 (2 cores, x86_64), SMT not supported, governor `performance`, turbo off; Linux kernel 7.0.0-38-generic; Node.js v22.22.1 / Go 1.26.0 / Python 3.14.4 |
 
@@ -278,3 +278,9 @@ MIT License (see `LICENSE`).
 > against the MSO **by `digestID`** (matching by position breaks on a disclosed subset). Every
 > benchmark checks its verification result and throws on failure, so a silently failing verification
 > cannot be reported as a fast one.
+
+> **Record the OpenSSL that `cryptography` bundles.** Between cryptography 49.0.0 and 50.0.2 the
+> Ed25519 primitive changed by a factor of three on macOS/arm64 (signing 3.2--3.3x, verification 2.5x),
+> while the Python version made under 1% difference and ECDSA P-256 moved by at most 1.18x. The Python
+> engine therefore records `openssl` alongside the package versions in every result file; compare that
+> field before attributing a cross-run difference to anything else.

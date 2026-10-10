@@ -250,6 +250,13 @@ RUNNERS = {
 
 
 def lib_versions():
+    """Package versions, plus the OpenSSL that `cryptography` bundles.
+
+    The bundled OpenSSL matters: between cryptography 49.0.0 and 50.0.2 the
+    Ed25519 signature primitive changed by a factor of three on macOS/arm64
+    while the Python version made under 1% difference, so a result file that
+    records only the Python version cannot be compared against another.
+    """
     from importlib.metadata import version, PackageNotFoundError
     out = {}
     for pkg in ['cryptography', 'PyLD', 'cbor2']:
@@ -257,6 +264,15 @@ def lib_versions():
             out[pkg] = version(pkg)
         except PackageNotFoundError:
             out[pkg] = 'n/a'
+    try:
+        from cryptography.hazmat.backends.openssl.backend import backend
+        out['openssl'] = backend.openssl_version_text()
+    except Exception:
+        try:
+            import ssl
+            out['openssl'] = ssl.OPENSSL_VERSION
+        except Exception:
+            out['openssl'] = 'n/a'
     return out
 
 
