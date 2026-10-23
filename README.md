@@ -77,19 +77,31 @@ Sections 4.2 and 4.3 of the paper.
 ## 3. Setup
 
 ```bash
-# Place the kit on the measurement server
 git clone https://github.com/fujie/vcbench.git && cd vcbench
-
-# --- Node.js ---
-cd node && npm install && cd ..
-
-# --- Go ---
-cd go && go mod tidy && go build -o vc-bench . && cd ..
-
-# --- Python ---
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r python/requirements.txt
+./setup.sh
 ```
+
+`setup.sh` restores the pinned dependency versions from `node/package-lock.json`,
+`python/requirements.txt` and `go/go.mod`, builds the Go binary, and installs the Python
+packages into a repository-local virtual environment (`.venv`). It prints the versions it
+ended up with, and it reports what is missing rather than failing silently. Pass language
+names to narrow it down: `./setup.sh node`, `./setup.sh python`.
+
+`config.sh` detects `.venv` automatically, so **you do not need to activate it** and
+`./run-all.sh` needs no environment variables. Note that `.venv/` is listed in
+`.gitignore`: a fresh clone has no virtual environment, which is why `setup.sh` should be
+run on every new checkout even on a machine that has measured before.
+
+<details>
+<summary>Equivalent manual steps</summary>
+
+```bash
+cd node && npm ci && cd ..                       # npm ci, not npm install
+cd go && go build -o vc-bench . && cd ..
+python3 -m venv .venv                            # needs python3-venv on Debian/Ubuntu
+.venv/bin/python -m pip install -r python/requirements.txt
+```
+</details>
 
 If you installed Python dependencies in a virtualenv, either pass
 `PYTHON_BIN=$PWD/.venv/bin/python3` at run time or activate the venv before running

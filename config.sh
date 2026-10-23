@@ -35,5 +35,11 @@ RESULTS_DIR=${RESULTS_DIR:-"results/$(date +%Y%m%d_%H%M%S)"}
 
 # per-language execution commands
 NODE_BIN=${NODE_BIN:-node}
+# Python interpreter. Defaults to the repository-local virtual environment that
+# setup.sh creates, so that `./run-all.sh` needs no environment variables and the
+# system Python is never touched; falls back to python3 when there is no .venv.
+if [[ -z "${PYTHON_BIN:-}" && -x "$(dirname "${BASH_SOURCE[0]}")/.venv/bin/python" ]]; then
+  PYTHON_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.venv/bin/python"
+fi
 PYTHON_BIN=${PYTHON_BIN:-python3}
 GO_BENCH_BIN=${GO_BENCH_BIN:-./go/vc-bench}

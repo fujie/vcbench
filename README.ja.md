@@ -71,19 +71,30 @@ vcbench/
 ## 3. セットアップ
 
 ```bash
-# 計測サーバへ配置
 git clone https://github.com/fujie/vcbench.git && cd vcbench
-
-# --- Node.js ---
-cd node && npm install && cd ..
-
-# --- Go ---
-cd go && go mod tidy && go build -o vc-bench . && cd ..
-
-# --- Python ---
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r python/requirements.txt
+./setup.sh
 ```
+
+`setup.sh` は `node/package-lock.json`・`python/requirements.txt`・`go/go.mod` が固定している
+依存の版を復元し、Go のバイナリをビルドし、Python のパッケージをリポジトリ内の仮想環境
+（`.venv`）に入れます。最後に実際に入った版を表示し、足りないものがあれば黙って失敗せず
+何が足りないかを示します。`./setup.sh node` のように言語を絞ることもできます。
+
+`config.sh` が `.venv` を自動検出するので、**activate は不要**で、`./run-all.sh` に環境変数も
+要りません。なお `.venv/` は `.gitignore` に入っているため、**新しくクローンすると仮想環境は
+存在しません**。以前に測定したことがあるマシンでも、checkout をやり直したら `setup.sh` を
+実行してください。
+
+<details>
+<summary>手作業で行う場合の同等の手順</summary>
+
+```bash
+cd node && npm ci && cd ..                       # npm install ではなく ci
+cd go && go build -o vc-bench . && cd ..
+python3 -m venv .venv                            # Debian/Ubuntu では python3-venv が必要
+.venv/bin/python -m pip install -r python/requirements.txt
+```
+</details>
 
 Python を venv で入れた場合は、実行時に `PYTHON_BIN=$PWD/.venv/bin/python3` を指定するか、
 venv を activate した状態で `run-all.sh` を実行してください。
