@@ -63,7 +63,16 @@ done
   echo "formats: $FORMATS"
   echo "node_extra_formats: ${NODE_EXTRA_FORMATS:-none}"
   echo "kit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)$(git diff --quiet 2>/dev/null || echo ' (dirty)')"
-  command -v lscpu >/dev/null && lscpu | grep -E "Model name|CPU\(s\)|MHz|Vendor" || true
+  if command -v lscpu >/dev/null; then
+    lscpu | grep -E "Model name|CPU\(s\)|MHz|Vendor" || true
+  elif command -v sysctl >/dev/null && [[ "$(uname -s)" == "Darwin" ]]; then
+    # macOS has no lscpu; sysctl carries the same facts
+    echo "Model name: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
+    echo "CPU(s): $(sysctl -n hw.ncpu 2>/dev/null) (perf $(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || echo '?')/eff $(sysctl -n hw.perflevel1.logicalcpu 2>/dev/null || echo '?'))"
+    echo "Vendor: Apple ($(sysctl -n hw.model 2>/dev/null))"
+    echo "os: $(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null)"
+    echo "on_ac_power: $(pmset -g ps 2>/dev/null | head -1 | sed 's/.*drawing from //;s/'\''//g' || echo n/a)"
+  fi
   echo "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo n/a)"
   echo "turbo(no_turbo): $(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo n/a)"
   echo "smt: $(cat /sys/devices/system/cpu/smt/control 2>/dev/null || echo n/a)"
