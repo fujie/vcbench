@@ -66,7 +66,9 @@ done
   # Pinned versus actual, so an archive shows on its own whether the pins held.
   echo "pinned: $(grep -hE '^[A-Z_]+=' versions.env 2>/dev/null | tr '\n' ' ' || echo n/a)"
   echo "node: $("$NODE_BIN" -v 2>/dev/null || echo n/a)  ($NODE_BIN)"
-  echo "go: $(go version -m "$GO_BENCH_BIN" 2>/dev/null | awk '$1=="go"{print $2; exit}' || true)${GOTOOLCHAIN:+ (GOTOOLCHAIN=$GOTOOLCHAIN)}"
+  # `go version -m` puts the version at the end of its first line, not in a field
+  # named "go"; `go version <bin>` prints that one line on its own.
+  echo "go: $(go version "$GO_BENCH_BIN" 2>/dev/null | awk 'NR==1{print $NF; exit}' || true)${GOTOOLCHAIN:+ (GOTOOLCHAIN=$GOTOOLCHAIN)}${GO_BUILD_FLAGS:+ [$GO_BUILD_FLAGS]}"
   echo "python: $("$PYTHON_BIN" -V 2>&1 || echo n/a)  ($PYTHON_BIN)"
   if command -v lscpu >/dev/null; then
     lscpu | grep -E "Model name|CPU\(s\)|MHz|Vendor" || true

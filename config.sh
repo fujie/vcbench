@@ -33,8 +33,8 @@ CPU_PIN=${CPU_PIN:-""}
 # results output directory
 RESULTS_DIR=${RESULTS_DIR:-"results/$(date +%Y%m%d_%H%M%S)"}
 
-# Toolchain selections that setup.sh resolved against versions.env (NODE_BIN and
-# GOTOOLCHAIN). Sourcing them here is what makes `./run-all.sh` measure with the
+# Toolchain selections that setup.sh resolved against versions.env (NODE_BIN,
+# GOTOOLCHAIN, GO_BUILD_FLAGS). Sourcing them here is what makes `./run-all.sh` measure with the
 # pinned versions rather than whatever happens to be first on PATH. Values already
 # set in the environment still win, so an explicit override works as before.
 if [[ -f "$(dirname "${BASH_SOURCE[0]}")/.toolchain" ]]; then

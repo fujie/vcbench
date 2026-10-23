@@ -133,7 +133,9 @@ if [[ " $WANT " == *" go "* ]]; then
       hint "install any Go 1.21 or newer; GOTOOLCHAIN then fetches go$GO_VERSION"
     fi
   else
-    driver=$(go version 2>/dev/null | awk '{print $3}')
+    # GOTOOLCHAIN=local asks the go on PATH about itself; without it the query
+    # would be answered by the pinned toolchain we just exported.
+    driver=$(GOTOOLCHAIN=local go version 2>/dev/null | awk '{print $3}')
     actual=$(GOTOOLCHAIN="go$GO_VERSION" go version 2>/dev/null | awk '{print $3}')
     if [[ "$actual" != "go$GO_VERSION" ]]; then
       if [[ -n "${ALLOW_GO_MISMATCH:-}" ]]; then
@@ -169,15 +171,38 @@ if [[ " $WANT " == *" go "* ]]; then
         hint "offline with a module cache: (cd go && GOFLAGS=-mod=mod go mod tidy)"
       fi
     fi
+    # Build flags. -trimpath keeps local paths out of the binary. On macOS the Go
+    # linker in 1.22 omits LC_UUID unless -B=gobuildid is given, and a recent dyld
+    # refuses to start such a binary ("missing LC_UUID load command", abort trap 6);
+    # the build itself succeeds, so only running it catches this.
+    GOBUILD_FLAGS=(-trimpath)
+    [[ "$(uname -s)" == "Darwin" ]] && GOBUILD_FLAGS+=(-ldflags=-B=gobuildid)
+    pin "GO_BUILD_FLAGS=\"${GOBUILD_FLAGS[*]}\""
+
     # Always rebuild: the recorded version comes from the compiling toolchain, so a
     # binary left over from a different pin would keep reporting the old version.
-    note "     building go/vc-bench with $actual"
-    if (cd go && go build -o vc-bench .) ; then
-      built=$(go version -m go/vc-bench 2>/dev/null | awk '$1=="go"{print $2; exit}')
-      ok "go/vc-bench built${built:+ (compiled by $built)}"
-      if [[ -n "$built" && -z "${ALLOW_GO_MISMATCH:-}" && "$built" != "go$GO_VERSION" ]]; then
+    note "     building go/vc-bench with $actual (${GOBUILD_FLAGS[*]})"
+    if (cd go && go build "${GOBUILD_FLAGS[@]}" -o vc-bench .) ; then
+      # `go version -m <bin>` prints "<path>: go1.22.12" on the first line and then
+      # tab-indented path/mod/dep/build lines, so the version is the last field of
+      # line 1 -- there is no line whose first field is "go".
+      built=$(go version go/vc-bench 2>/dev/null | awk 'NR==1{print $NF; exit}')
+      if [[ -z "$built" ]]; then
+        bad "could not read the version out of go/vc-bench"
+        hint "go version go/vc-bench   # expected '<path>: go$GO_VERSION'"
+      elif [[ "$built" != "go$GO_VERSION" && -z "${ALLOW_GO_MISMATCH:-}" ]]; then
         bad "the binary reports $built, not go$GO_VERSION"
-        hint "this is the version the result files will record; investigate before measuring"
+        hint "this is the version the result files will record; fix it before measuring"
+      else
+        # A binary that builds but cannot start would otherwise be found by
+        # run-all.sh, a suite into the run.
+        if ./go/vc-bench -format sdjwt -n 1 -warmup 0 -out /dev/null >/dev/null 2>&1; then
+          ok "go/vc-bench built and runs (compiled by $built)"
+        else
+          bad "go/vc-bench was built by $built but will not run"
+          hint "./go/vc-bench -format sdjwt -n 1 -warmup 0 -out /dev/null   # shows the error"
+          hint "on macOS, 'missing LC_UUID load command' means -B=gobuildid did not apply"
+        fi
       fi
       vers=$(cd go && go list -m -f '{{.Path}} {{.Version}}' \
                github.com/piprate/json-gold github.com/fxamacker/cbor/v2 2>/dev/null \
@@ -285,7 +310,7 @@ fi
 # rather than silently reusing a stale selection.
 keys=()
 [[ " $WANT " == *" node "* ]] && keys+=("NODE_BIN")
-[[ " $WANT " == *" go "*   ]] && keys+=("GOTOOLCHAIN")
+[[ " $WANT " == *" go "*   ]] && keys+=("GOTOOLCHAIN" "GO_BUILD_FLAGS")
 ((${#keys[@]})) && write_toolchain "${keys[@]}"
 
 # ─────────────────────────────── did setup leave tracked Go files changed? ──
