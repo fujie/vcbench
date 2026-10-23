@@ -33,6 +33,18 @@ CPU_PIN=${CPU_PIN:-""}
 # results output directory
 RESULTS_DIR=${RESULTS_DIR:-"results/$(date +%Y%m%d_%H%M%S)"}
 
+# Toolchain selections that setup.sh resolved against versions.env (NODE_BIN and
+# GOTOOLCHAIN). Sourcing them here is what makes `./run-all.sh` measure with the
+# pinned versions rather than whatever happens to be first on PATH. Values already
+# set in the environment still win, so an explicit override works as before.
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/.toolchain" ]]; then
+  _vcb_node_pre="${NODE_BIN:-}"
+  # shellcheck disable=SC1090,SC1091
+  . "$(dirname "${BASH_SOURCE[0]}")/.toolchain"
+  [[ -n "$_vcb_node_pre" ]] && NODE_BIN="$_vcb_node_pre"
+  unset _vcb_node_pre
+fi
+
 # per-language execution commands
 NODE_BIN=${NODE_BIN:-node}
 # Python interpreter. Defaults to the repository-local virtual environment that

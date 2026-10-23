@@ -6,37 +6,99 @@
 #
 # Python is installed into a virtual environment inside the repository (.venv), which
 # config.sh then picks up automatically, so the system Python is left untouched and
-# `python3 -m pip` is never needed. Everything is pinned: node/package-lock.json,
-# python/requirements.txt and go/go.mod hold the versions the papers report.
+# `python3 -m pip` is never needed.
+#
+# Two things are pinned and both are enforced here rather than left to the machine:
+#   runtimes     -- versions.env (Node exact, Go exact via GOTOOLCHAIN, Python minor)
+#   dependencies -- node/package-lock.json, go/go.sum, python/requirements.txt
+# A version that cannot be met is an error, not a warning, because a result file
+# recording a different runtime than another cannot be placed beside it. Override
+# per language with ALLOW_NODE_MISMATCH / ALLOW_GO_MISMATCH / ALLOW_PY_MISMATCH=1,
+# which proceeds and prints the version to record in the environment table.
 set -uo pipefail
 cd "$(dirname "$0")"
 
 WANT="${*:-node go python}"
 VENV=".venv"
-# The minor version the papers report. The runtime itself makes under about 1% of
-# difference to these benchmarks -- the dependency versions are what matter -- but a
-# result file that records a different interpreter than the paper's table cannot be
-# compared against it, so a mismatch is an error here rather than a warning.
-# Set ALLOW_PY_MISMATCH=1 to proceed anyway and record the version you actually used.
-WANT_PY="3.12"
+TOOLCHAIN_FILE=".toolchain"     # written for config.sh; gitignored
+
+# shellcheck disable=SC1091
+[[ -f versions.env ]] && . ./versions.env
+NODE_VERSION="${NODE_VERSION:-24.18.0}"
+GO_VERSION="${GO_VERSION:-1.22.12}"
+PYTHON_MINOR="${PYTHON_MINOR:-3.12}"
+WANT_PY="$PYTHON_MINOR"
+
 fail=0
 note() { printf '%s\n' "$*"; }
 ok()   { printf '  OK   %s\n' "$*"; }
 bad()  { printf '  FAIL %s\n' "$*"; fail=1; }
 hint() { printf '       -> %s\n' "$*"; }
 
+# Pins are collected here and merged into $TOOLCHAIN_FILE at the end. They are not
+# written as we go: ./setup.sh accepts a subset of the languages, and truncating the
+# file up front would drop the pins a previous run recorded for the others.
+PINS=()
+pin() { PINS+=("$1"); }
+
+write_toolchain() {  # keys this run is responsible for: $@
+  local keep=() line key owned
+  if [[ -f "$TOOLCHAIN_FILE" ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" && "$line" != \#* ]] || continue
+      key=${line#export }; key=${key%%=*}
+      owned=0
+      for k in "$@"; do [[ "$key" == "$k" ]] && owned=1; done
+      [[ $owned -eq 0 ]] && keep+=("$line")
+    done < "$TOOLCHAIN_FILE"
+  fi
+  {
+    printf '# written by setup.sh from versions.env; sourced by config.sh. Do not edit.\n'
+    ((${#keep[@]})) && printf '%s\n' "${keep[@]}"
+    ((${#PINS[@]})) && printf '%s\n' "${PINS[@]}"
+  } > "$TOOLCHAIN_FILE"
+}
+
 note "== vcbench setup =="
 note "targets: $WANT"
+note "pinned:  node v$NODE_VERSION / go$GO_VERSION / python $PYTHON_MINOR.x  (versions.env)"
 note ""
 
 # ──────────────────────────────────────────────────────────── Node
 if [[ " $WANT " == *" node "* ]]; then
-  note "-- Node.js"
-  if ! command -v node >/dev/null; then
-    bad "node not found"
-    hint "install Node.js 24.x (the papers used v24.18.0)"
+  note "-- Node.js (pinned v$NODE_VERSION)"
+  NODE_BIN=""
+  # The node on PATH first, then the copies the common version managers keep, so
+  # that having the right version installed is enough -- no shell activation needed.
+  for cand in "$(command -v node 2>/dev/null)" \
+              "$HOME/.nvm/versions/node/v$NODE_VERSION/bin/node" \
+              "$HOME/.local/share/fnm/node-versions/v$NODE_VERSION/installation/bin/node" \
+              "$HOME/Library/Application Support/fnm/node-versions/v$NODE_VERSION/installation/bin/node" \
+              "$HOME/.volta/tools/image/node/$NODE_VERSION/bin/node" \
+              "/usr/local/n/versions/node/$NODE_VERSION/bin/node"; do
+    [[ -n "$cand" && -x "$cand" ]] || continue
+    if [[ "$("$cand" -v 2>/dev/null)" == "v$NODE_VERSION" ]]; then NODE_BIN="$cand"; break; fi
+  done
+
+  if [[ -z "$NODE_BIN" ]]; then
+    have=$(command -v node >/dev/null && node -v || echo "none")
+    if [[ -n "${ALLOW_NODE_MISMATCH:-}" && "$have" != "none" ]]; then
+      NODE_BIN="$(command -v node)"
+      ok "node $have"
+      note "     NOTE: not v$NODE_VERSION -- record $have in the environment table"
+    else
+      bad "Node.js v$NODE_VERSION not found (on PATH: $have)"
+      hint "nvm:    nvm install $NODE_VERSION"
+      hint "fnm:    fnm install $NODE_VERSION"
+      hint "volta:  volta install node@$NODE_VERSION"
+      hint "ALLOW_NODE_MISMATCH=1 ./setup.sh    # use $have and report it instead"
+    fi
   else
-    ok "node $(node -v)"
+    ok "node $("$NODE_BIN" -v)  ($NODE_BIN)"
+  fi
+
+  if [[ -n "$NODE_BIN" ]]; then
+    pin "NODE_BIN=\"$NODE_BIN\""
     if [[ -f node/package-lock.json ]]; then
       note "     npm ci (restoring the pinned dependency versions)"
       if (cd node && npm ci --silent) ; then
@@ -54,14 +116,46 @@ fi
 
 # ──────────────────────────────────────────────────────────── Go
 if [[ " $WANT " == *" go "* ]]; then
-  note "-- Go"
-  if [[ -x go/vc-bench ]]; then
-    ok "go/vc-bench already built"
-  elif ! command -v go >/dev/null; then
-    bad "go not found and go/vc-bench is not built"
-    hint "install Go 1.22.x (the papers used go1.22.2), or copy a prebuilt go/vc-bench"
+  note "-- Go (pinned go$GO_VERSION)"
+  # The version recorded in the result files is the toolchain that compiled
+  # go/vc-bench, so the binary has to be rebuilt whenever the pin changes.
+  # GOTOOLCHAIN makes any Go 1.21 or newer fetch and run exactly the pinned
+  # toolchain, which is why no separate Go installation is required.
+  export GOTOOLCHAIN="go$GO_VERSION"
+  go_ok=0
+  if ! command -v go >/dev/null; then
+    if [[ -x go/vc-bench ]]; then
+      bad "go not found, and the prebuilt go/vc-bench cannot be checked against the pin"
+      hint "install any Go 1.21+ and re-run; GOTOOLCHAIN will fetch go$GO_VERSION itself"
+      hint "or remove go/vc-bench and measure without Go: LANGS=\"node python\" ./run-all.sh"
+    else
+      bad "go not found and go/vc-bench is not built"
+      hint "install any Go 1.21 or newer; GOTOOLCHAIN then fetches go$GO_VERSION"
+    fi
   else
-    ok "go $(go version | awk '{print $3}')"
+    driver=$(go version 2>/dev/null | awk '{print $3}')
+    actual=$(GOTOOLCHAIN="go$GO_VERSION" go version 2>/dev/null | awk '{print $3}')
+    if [[ "$actual" != "go$GO_VERSION" ]]; then
+      if [[ -n "${ALLOW_GO_MISMATCH:-}" ]]; then
+        unset GOTOOLCHAIN
+        actual=$driver
+        go_ok=1
+        ok "go $actual"
+        note "     NOTE: not go$GO_VERSION -- record $actual in the environment table"
+      else
+        bad "could not get go$GO_VERSION (the go on PATH is $driver, which resolved to ${actual:-nothing})"
+        hint "a Go older than 1.21 cannot switch toolchains; install a newer one"
+        hint "offline: go install golang.org/dl/go$GO_VERSION@latest && go$GO_VERSION download"
+        hint "ALLOW_GO_MISMATCH=1 ./setup.sh    # build with $driver and report it instead"
+      fi
+    else
+      go_ok=1
+      ok "go $actual  (via GOTOOLCHAIN; the go on PATH is $driver)"
+    fi
+  fi
+
+  if [[ $go_ok -eq 1 ]]; then
+    [[ -n "${GOTOOLCHAIN:-}" ]] && pin "export GOTOOLCHAIN=\"$GOTOOLCHAIN\""
     if [[ ! -f go/go.sum ]]; then
       # Without go.sum, 'go build' resolves the dependencies itself and adds the
       # indirect requires to go.mod, which both leaves the checkout dirty and
@@ -75,9 +169,16 @@ if [[ " $WANT " == *" go "* ]]; then
         hint "offline with a module cache: (cd go && GOFLAGS=-mod=mod go mod tidy)"
       fi
     fi
-    note "     building go/vc-bench"
+    # Always rebuild: the recorded version comes from the compiling toolchain, so a
+    # binary left over from a different pin would keep reporting the old version.
+    note "     building go/vc-bench with $actual"
     if (cd go && go build -o vc-bench .) ; then
-      ok "go/vc-bench built"
+      built=$(go version -m go/vc-bench 2>/dev/null | awk '$1=="go"{print $2; exit}')
+      ok "go/vc-bench built${built:+ (compiled by $built)}"
+      if [[ -n "$built" && -z "${ALLOW_GO_MISMATCH:-}" && "$built" != "go$GO_VERSION" ]]; then
+        bad "the binary reports $built, not go$GO_VERSION"
+        hint "this is the version the result files will record; investigate before measuring"
+      fi
       vers=$(cd go && go list -m -f '{{.Path}} {{.Version}}' \
                github.com/piprate/json-gold github.com/fxamacker/cbor/v2 2>/dev/null \
              | tr '\n' ' ')
@@ -91,7 +192,7 @@ fi
 
 # ──────────────────────────────────────────────────────────── Python
 if [[ " $WANT " == *" python "* ]]; then
-  note "-- Python"
+  note "-- Python (pinned $WANT_PY.x)"
   PY=""
   minor_of() { "$1" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null; }
 
@@ -114,6 +215,8 @@ if [[ " $WANT " == *" python "* ]]; then
                 "/opt/homebrew/opt/python@$WANT_PY/bin/python$WANT_PY" \
                 "/usr/local/opt/python@$WANT_PY/bin/python$WANT_PY" \
                 "$HOME/.pyenv/versions/$WANT_PY"*/bin/python \
+                "$HOME/.local/share/uv/python/cpython-$WANT_PY"*/bin/"python$WANT_PY" \
+                "$HOME/.local/share/uv/python/cpython-$WANT_PY"*/bin/python3 \
                 python3 python; do
       [[ -x "$cand" ]] && { base="$cand"; break; }
       command -v "$cand" >/dev/null 2>&1 && { base="$cand"; break; }
@@ -122,10 +225,11 @@ if [[ " $WANT " == *" python "* ]]; then
       bad "no Python interpreter found"
       hint "install Python $WANT_PY (the papers used 3.12.3 and 3.12.15)"
     elif [[ "$(minor_of "$base")" != "$WANT_PY" && -z "${ALLOW_PY_MISMATCH:-}" ]]; then
-      bad "only Python $(minor_of "$base") is available ($base); the papers used $WANT_PY"
-      hint "macOS (Homebrew):  brew install python@$WANT_PY"
-      hint "Debian/Ubuntu:     sudo apt install python$WANT_PY python$WANT_PY-venv"
-      hint "pyenv:             pyenv install $WANT_PY && pyenv local $WANT_PY"
+      bad "only Python $(minor_of "$base") is available ($base); the pin is $WANT_PY"
+      hint "uv (no root, any distro):  uv python install $WANT_PY"
+      hint "macOS (Homebrew):          brew install python@$WANT_PY"
+      hint "Debian/Ubuntu:             sudo apt install python$WANT_PY python$WANT_PY-venv"
+      hint "pyenv:                     pyenv install $WANT_PY && pyenv local $WANT_PY"
       hint "ALLOW_PY_MISMATCH=1 ./setup.sh    # use $(minor_of "$base") and report it instead"
       hint "(the interpreter version changes these benchmarks by under about 1%, but"
       hint " the paper's environment table has to match whatever you actually run)"
@@ -174,6 +278,15 @@ if [[ " $WANT " == *" python "* ]]; then
   fi
   note ""
 fi
+
+# ─────────────────────────────── record the toolchain selections ────────────
+# Each language owns its own keys, so preparing one language leaves the others' pins
+# in place. A failed language writes no key, which makes config.sh fall back to PATH
+# rather than silently reusing a stale selection.
+keys=()
+[[ " $WANT " == *" node "* ]] && keys+=("NODE_BIN")
+[[ " $WANT " == *" go "*   ]] && keys+=("GOTOOLCHAIN")
+((${#keys[@]})) && write_toolchain "${keys[@]}"
 
 # ─────────────────────────────── did setup leave tracked Go files changed? ──
 # run-all.sh stamps the kit commit into environment.txt and marks it "(dirty)" if

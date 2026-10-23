@@ -14,3 +14,6 @@ results/*
 # OS / editor
 .DS_Store
 *.swp
+
+# toolchain selections resolved by setup.sh (machine-specific)
+.toolchain

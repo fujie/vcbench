@@ -63,6 +63,11 @@ done
   echo "formats: $FORMATS"
   echo "node_extra_formats: ${NODE_EXTRA_FORMATS:-none}"
   echo "kit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)$(git diff --quiet 2>/dev/null || echo ' (dirty)')"
+  # Pinned versus actual, so an archive shows on its own whether the pins held.
+  echo "pinned: $(grep -hE '^[A-Z_]+=' versions.env 2>/dev/null | tr '\n' ' ' || echo n/a)"
+  echo "node: $("$NODE_BIN" -v 2>/dev/null || echo n/a)  ($NODE_BIN)"
+  echo "go: $(go version -m "$GO_BENCH_BIN" 2>/dev/null | awk '$1=="go"{print $2; exit}' || true)${GOTOOLCHAIN:+ (GOTOOLCHAIN=$GOTOOLCHAIN)}"
+  echo "python: $("$PYTHON_BIN" -V 2>&1 || echo n/a)  ($PYTHON_BIN)"
   if command -v lscpu >/dev/null; then
     lscpu | grep -E "Model name|CPU\(s\)|MHz|Vendor" || true
   elif command -v sysctl >/dev/null && [[ "$(uname -s)" == "Darwin" ]]; then
