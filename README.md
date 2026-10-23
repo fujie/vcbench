@@ -251,7 +251,7 @@ following conditions (Environment A; Environment B is the bare-metal cross-check
 | Item | Value |
 |---|---|
 | Hardware | AMD EPYC 7763 (x86_64); 2 of 4 vCPUs taken offline with SMT disabled, measurement process pinned to a single core with taskset |
-| OS | Ubuntu Linux (kernel 6.17.0-azure) |
+| OS | Ubuntu Linux; the host was upgraded between sessions, so the security suites ran on kernel 6.17.0-1018-azure and the performance and canonicalization-cost suites on 7.0.0-1017-azure |
 | Runtimes | Node.js v24.18.0 (OpenSSL 3.5.7) / Go 1.22.2 / Python 3.12.3 |
 | Libraries | jose 6.2.8, jsonld 8.3.3 (rdf-canonize 3.4.0), cbor-x 1.6.5, canonicalize 1.0.8, PyLD 3.3.0, cbor2 6.1.5, cryptography 50.0.2, piprate/json-gold v0.8.0, fxamacker/cbor v2.9.2 |
 | Parameters | N=2,000 / 50 warmup iterations / 5 independent runs |

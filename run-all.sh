@@ -47,6 +47,11 @@ done
 {
   echo "date: $(date -Iseconds)"
   echo "kernel: $(uname -srmo)"
+  echo "params: N=$N WARMUP=$WARMUP RUNS=$RUNS CPU_PIN=${CPU_PIN:-none}"
+  echo "langs: $LANGS"
+  echo "formats: $FORMATS"
+  echo "node_extra_formats: ${NODE_EXTRA_FORMATS:-none}"
+  echo "kit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)$(git diff --quiet 2>/dev/null || echo ' (dirty)')"
   command -v lscpu >/dev/null && lscpu | grep -E "Model name|CPU\(s\)|MHz|Vendor" || true
   echo "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo n/a)"
   echo "turbo(no_turbo): $(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo n/a)"

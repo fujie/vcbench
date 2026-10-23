@@ -1,3 +1,11 @@
-cryptography>=42.0
-PyLD>=2.0.4
-cbor2>=5.6
+# Pinned to the versions the papers report, so that a fresh install reproduces them.
+# These matter: between cryptography 49.0.0 and 50.0.2 the Ed25519 primitive changes by
+# a factor of three on macOS/arm64, so a loose constraint silently changes the results.
+cryptography==50.0.2
+PyLD==3.3.0
+cbor2==6.1.5
+
+# For general use outside reproducing the papers, the loose constraints were:
+#   cryptography>=42.0
+#   PyLD>=2.0.4
+#   cbor2>=5.6

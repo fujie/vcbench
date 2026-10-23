@@ -229,7 +229,7 @@ node aggregate.mjs results/ results/summary
 | 項目 | 値 |
 |---|---|
 | ハードウェア | AMD EPYC 7763 (x86_64)。4 vCPU中2コアをオフライン化しSMT無効、tasksetで単一コアに固定 |
-| OS | Ubuntu Linux (kernel 6.17.0-azure) |
+| OS | Ubuntu Linux。セッションの間にホストが更新されたため、セキュリティ系スイートはカーネル 6.17.0-1018-azure、性能・正規化コスト系スイートは 7.0.0-1017-azure |
 | ランタイム | Node.js v24.18.0 (OpenSSL 3.5.7) / Go 1.22.2 / Python 3.12.3 |
 | ライブラリ | jose 6.2.8, jsonld 8.3.3 (rdf-canonize 3.4.0), cbor-x 1.6.5, canonicalize 1.0.8, PyLD 3.3.0, cbor2 6.1.5, cryptography 50.0.2, piprate/json-gold v0.8.0, fxamacker/cbor v2.9.2 |
 | パラメータ | N=2,000 / ウォームアップ50回 / 独立5回実行 |
