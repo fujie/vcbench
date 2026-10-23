@@ -37,8 +37,19 @@ for lang in $LANGS; do
       ;;
     python)
       command -v "$PYTHON_BIN" >/dev/null || { echo "ERROR: python3 not found"; exit 1; }
-      "$PYTHON_BIN" -c "import cryptography, pyld, cbor2" 2>/dev/null || {
-        echo "ERROR: run $PYTHON_BIN -m pip install -r python/requirements.txt first"; exit 1; }
+      if ! "$PYTHON_BIN" -c "import cryptography, pyld, cbor2" 2>/dev/null; then
+        echo "ERROR: $PYTHON_BIN cannot import cryptography, pyld and cbor2."
+        echo "  which module is missing:  $PYTHON_BIN -c 'import cryptography, pyld, cbor2'"
+        echo "  install them:            $PYTHON_BIN -m pip install -r python/requirements.txt"
+        echo "  if that interpreter has no pip, use a virtual environment and point"
+        echo "  PYTHON_BIN at it, which leaves the system Python untouched:"
+        echo "      python3 -m venv ~/.venv-vcbench   # needs python3-venv on Debian/Ubuntu"
+        echo "      ~/.venv-vcbench/bin/python -m pip install -r python/requirements.txt"
+        echo "      PYTHON_BIN=~/.venv-vcbench/bin/python ./run-all.sh"
+        echo "  to measure the other languages first, set LANGS=\"node go\" and run Python"
+        echo "  later into the same RESULTS_DIR; the aggregation picks up both passes."
+        exit 1
+      fi
       ;;
   esac
 done
