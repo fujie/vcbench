@@ -13,6 +13,12 @@ cd "$(dirname "$0")"
 
 WANT="${*:-node go python}"
 VENV=".venv"
+# The minor version the papers report. The runtime itself makes under about 1% of
+# difference to these benchmarks -- the dependency versions are what matter -- but a
+# result file that records a different interpreter than the paper's table cannot be
+# compared against it, so a mismatch is an error here rather than a warning.
+# Set ALLOW_PY_MISMATCH=1 to proceed anyway and record the version you actually used.
+WANT_PY="3.12"
 fail=0
 note() { printf '%s\n' "$*"; }
 ok()   { printf '  OK   %s\n' "$*"; }
@@ -57,11 +63,17 @@ if [[ " $WANT " == *" go "* ]]; then
   else
     ok "go $(go version | awk '{print $3}')"
     if [[ ! -f go/go.sum ]]; then
-      note "     go/go.sum is absent, so 'go build' will resolve and record the"
-      note "     dependency versions itself and leave go/go.mod modified. The"
-      note "     versions still come from the require lines in go/go.mod, but the"
-      note "     checksums are not pinned. Commit go/go.sum (and the go.mod that"
-      note "     'go mod tidy' produces) to close that gap."
+      # Without go.sum, 'go build' resolves the dependencies itself and adds the
+      # indirect requires to go.mod, which both leaves the checkout dirty and
+      # leaves the checksums unpinned. Produce it here instead of reporting it.
+      note "     go/go.sum is absent; running 'go mod tidy' to create it"
+      if (cd go && go mod tidy) ; then
+        ok "go/go.sum written ($(grep -c . go/go.sum 2>/dev/null) entries)"
+      else
+        bad "go mod tidy failed"
+        hint "network access to the module proxy is needed the first time"
+        hint "offline with a module cache: (cd go && GOFLAGS=-mod=mod go mod tidy)"
+      fi
     fi
     note "     building go/vc-bench"
     if (cd go && go build -o vc-bench .) ; then
@@ -81,23 +93,47 @@ fi
 if [[ " $WANT " == *" python "* ]]; then
   note "-- Python"
   PY=""
+  minor_of() { "$1" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null; }
+
   if [[ -x "$VENV/bin/python" ]]; then
-    PY="$VENV/bin/python"
-    ok "existing $VENV found ($($PY -V 2>&1))"
+    got=$(minor_of "$VENV/bin/python")
+    if [[ "$got" == "$WANT_PY" || -n "${ALLOW_PY_MISMATCH:-}" ]]; then
+      PY="$VENV/bin/python"
+      ok "existing $VENV found ($($PY -V 2>&1))"
+      [[ "$got" != "$WANT_PY" ]] && note "     NOTE: $got, not $WANT_PY -- record this version with your results"
+    else
+      bad "existing $VENV is Python $got, but the papers used $WANT_PY"
+      hint "rm -rf $VENV && ./setup.sh        # rebuild it on $WANT_PY"
+      hint "ALLOW_PY_MISMATCH=1 ./setup.sh    # keep $got and report it instead"
+    fi
   else
-    # Find an interpreter to build the venv from. Prefer 3.12, which the papers used.
+    # Find an interpreter to build the venv from. python3 is deliberately last:
+    # on Homebrew and pyenv machines it is whatever is newest, not what we want.
     base=""
-    for cand in python3.12 python3 python; do
-      command -v "$cand" >/dev/null && { base="$cand"; break; }
+    for cand in "python$WANT_PY" \
+                "/opt/homebrew/opt/python@$WANT_PY/bin/python$WANT_PY" \
+                "/usr/local/opt/python@$WANT_PY/bin/python$WANT_PY" \
+                "$HOME/.pyenv/versions/$WANT_PY"*/bin/python \
+                python3 python; do
+      [[ -x "$cand" ]] && { base="$cand"; break; }
+      command -v "$cand" >/dev/null 2>&1 && { base="$cand"; break; }
     done
     if [[ -z "$base" ]]; then
-      bad "no python3 found"
-      hint "install Python 3.12 (the papers used 3.12.3)"
+      bad "no Python interpreter found"
+      hint "install Python $WANT_PY (the papers used 3.12.3 and 3.12.15)"
+    elif [[ "$(minor_of "$base")" != "$WANT_PY" && -z "${ALLOW_PY_MISMATCH:-}" ]]; then
+      bad "only Python $(minor_of "$base") is available ($base); the papers used $WANT_PY"
+      hint "macOS (Homebrew):  brew install python@$WANT_PY"
+      hint "Debian/Ubuntu:     sudo apt install python$WANT_PY python$WANT_PY-venv"
+      hint "pyenv:             pyenv install $WANT_PY && pyenv local $WANT_PY"
+      hint "ALLOW_PY_MISMATCH=1 ./setup.sh    # use $(minor_of "$base") and report it instead"
+      hint "(the interpreter version changes these benchmarks by under about 1%, but"
+      hint " the paper's environment table has to match whatever you actually run)"
     else
       note "     creating $VENV from $base ($($base -V 2>&1))"
       if "$base" -m venv "$VENV" 2>/dev/null; then
         PY="$VENV/bin/python"
-        ok "$VENV created"
+        ok "$VENV created ($($PY -V 2>&1))"
       else
         bad "$base -m venv failed (the venv module is probably not installed)"
         hint "Debian/Ubuntu: sudo apt install python3-venv"
@@ -137,6 +173,21 @@ if [[ " $WANT " == *" python "* ]]; then
     fi
   fi
   note ""
+fi
+
+# ─────────────────────────────── did setup leave tracked Go files changed? ──
+# run-all.sh stamps the kit commit into environment.txt and marks it "(dirty)" if
+# anything is uncommitted, so an archive is easier to interpret if these are
+# committed before measuring rather than after.
+if command -v git >/dev/null && git rev-parse --git-dir >/dev/null 2>&1; then
+  godirty=$(git status --porcelain -- go/go.mod go/go.sum 2>/dev/null)
+  if [[ -n "$godirty" ]]; then
+    note "-- note: setup changed the Go module files"
+    printf '%s\n' "$godirty" | sed 's/^/       /'
+    note "       Committing them keeps environment.txt from recording \"(dirty)\":"
+    note "         git add go/go.mod go/go.sum && git commit -m 'build: pin the Go module checksums'"
+    note ""
+  fi
 fi
 
 # ──────────────────────────────────────────────────────────── summary
