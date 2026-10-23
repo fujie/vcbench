@@ -56,9 +56,20 @@ if [[ " $WANT " == *" go "* ]]; then
     hint "install Go 1.22.x (the papers used go1.22.2), or copy a prebuilt go/vc-bench"
   else
     ok "go $(go version | awk '{print $3}')"
+    if [[ ! -f go/go.sum ]]; then
+      note "     go/go.sum is absent, so 'go build' will resolve and record the"
+      note "     dependency versions itself and leave go/go.mod modified. The"
+      note "     versions still come from the require lines in go/go.mod, but the"
+      note "     checksums are not pinned. Commit go/go.sum (and the go.mod that"
+      note "     'go mod tidy' produces) to close that gap."
+    fi
     note "     building go/vc-bench"
     if (cd go && go build -o vc-bench .) ; then
       ok "go/vc-bench built"
+      vers=$(cd go && go list -m -f '{{.Path}} {{.Version}}' \
+               github.com/piprate/json-gold github.com/fxamacker/cbor/v2 2>/dev/null \
+             | tr '\n' ' ')
+      [[ -n "$vers" ]] && note "     resolved: $vers"
     else
       bad "go build failed"
     fi

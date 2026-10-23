@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,34 @@ import (
 	cborlib "github.com/fxamacker/cbor/v2"
 	jsonldgo "github.com/piprate/json-gold/ld"
 )
+
+// libraryVersions reports the module versions the binary was actually built
+// against, read from the build info the linker embeds. Reporting "see go.sum"
+// instead made a result file uncomparable against another one, which is the
+// problem this avoids.
+func libraryVersions(paths ...string) map[string]string {
+	out := make(map[string]string, len(paths))
+	for _, p := range paths {
+		out[p] = "unknown (no build info)"
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return out
+	}
+	for _, dep := range info.Deps {
+		for _, p := range paths {
+			if dep.Path != p {
+				continue
+			}
+			v := dep.Version
+			if dep.Replace != nil {
+				v = dep.Replace.Version + " (replaced " + dep.Replace.Path + ")"
+			}
+			out[p] = v
+		}
+	}
+	return out
+}
 
 var (
 	formatFlag = flag.String("format", "all", "sdjwt|jsonld|jsonld-jcs|mdoc|primitives|all")
@@ -309,10 +338,10 @@ func main() {
 			"go":       runtime.Version(),
 			"platform": runtime.GOOS + " " + runtime.GOARCH,
 			"cores":    runtime.NumCPU(),
-			"libraries": map[string]string{
-				"github.com/piprate/json-gold": "see go.sum",
-				"github.com/fxamacker/cbor/v2": "see go.sum",
-			},
+			"libraries": libraryVersions(
+				"github.com/piprate/json-gold",
+				"github.com/fxamacker/cbor/v2",
+			),
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 		},
 		"benches": benches,

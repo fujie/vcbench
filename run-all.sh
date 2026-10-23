@@ -56,8 +56,8 @@ done
 
 # ── environment snapshot ──────────────────────────────────────────────────
 {
-  echo "date: $(date -Iseconds)"
-  echo "kernel: $(uname -srmo)"
+  echo "date: $(date -Iseconds 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "kernel: $(uname -srmo 2>/dev/null || uname -srm)"
   echo "params: N=$N WARMUP=$WARMUP RUNS=$RUNS CPU_PIN=${CPU_PIN:-none}"
   echo "langs: $LANGS"
   echo "formats: $FORMATS"
