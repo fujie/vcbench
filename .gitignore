@@ -17,3 +17,6 @@ results/*
 
 # toolchain selections resolved by setup.sh (machine-specific)
 .toolchain
+
+# runtimes setup.sh fetched (machine-specific, large)
+.toolchains/

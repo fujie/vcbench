@@ -22,11 +22,15 @@ WANT="${*:-node go python}"
 VENV=".venv"
 TOOLCHAIN_FILE=".toolchain"     # written for config.sh; gitignored
 
+# versions.env is the single source of truth, but an explicitly exported value still
+# wins, so that one-off checks do not require editing the pin file.
+_env_node="${NODE_VERSION:-}"; _env_go="${GO_VERSION:-}"; _env_py="${PYTHON_MINOR:-}"
 # shellcheck disable=SC1091
 [[ -f versions.env ]] && . ./versions.env
-NODE_VERSION="${NODE_VERSION:-24.18.0}"
-GO_VERSION="${GO_VERSION:-1.22.12}"
-PYTHON_MINOR="${PYTHON_MINOR:-3.12}"
+NODE_VERSION="${_env_node:-${NODE_VERSION:-24.18.0}}"
+GO_VERSION="${_env_go:-${GO_VERSION:-1.22.12}}"
+PYTHON_MINOR="${_env_py:-${PYTHON_MINOR:-3.12}}"
+unset _env_node _env_go _env_py
 WANT_PY="$PYTHON_MINOR"
 
 fail=0
@@ -80,6 +84,62 @@ if [[ " $WANT " == *" node "* ]]; then
     if [[ "$("$cand" -v 2>/dev/null)" == "v$NODE_VERSION" ]]; then NODE_BIN="$cand"; break; fi
   done
 
+  # Nothing installed matched, so fetch the official build for this platform. Go
+  # already self-provisions through GOTOOLCHAIN and Python through the venv; this
+  # is the same for Node, and it means a measurement machine needs no version
+  # manager at all. Set VCBENCH_NO_FETCH=1 to require a preinstalled Node instead.
+  if [[ -z "$NODE_BIN" && -z "${VCBENCH_NO_FETCH:-}" ]]; then
+    case "$(uname -s)-$(uname -m)" in
+      Linux-x86_64)   plat=linux-x64 ;;
+      Linux-aarch64)  plat=linux-arm64 ;;
+      Darwin-arm64)   plat=darwin-arm64 ;;
+      Darwin-x86_64)  plat=darwin-x64 ;;
+      *)              plat="" ;;
+    esac
+    local_node=".toolchains/node-v$NODE_VERSION-$plat/bin/node"
+    if [[ -x "$local_node" && "$("$local_node" -v 2>/dev/null)" == "v$NODE_VERSION" ]]; then
+      NODE_BIN="$local_node"
+      note "     using the copy fetched earlier"
+    elif [[ -z "$plat" ]]; then
+      note "     no official build is published for $(uname -s)-$(uname -m); install Node yourself"
+    elif ! command -v curl >/dev/null && ! command -v wget >/dev/null; then
+      note "     neither curl nor wget is available, so Node cannot be fetched"
+    else
+      tgz="node-v$NODE_VERSION-$plat.tar.xz"
+      base="https://nodejs.org/dist/v$NODE_VERSION"
+      note "     Node v$NODE_VERSION not installed; fetching $tgz from nodejs.org"
+      mkdir -p .toolchains
+      get() {  # $1=url $2=dest
+        if command -v curl >/dev/null; then curl -fsSL --retry 2 -o "$2" "$1"
+        else wget -q -O "$2" "$1"; fi
+      }
+      if get "$base/$tgz" ".toolchains/$tgz" && get "$base/SHASUMS256.txt" ".toolchains/SHASUMS256.txt"; then
+        want_sum=$(awk -v f="$tgz" '$2==f{print $1; exit}' .toolchains/SHASUMS256.txt)
+        if command -v sha256sum >/dev/null; then
+          got_sum=$(sha256sum ".toolchains/$tgz" | awk '{print $1}')
+        else
+          got_sum=$(shasum -a 256 ".toolchains/$tgz" | awk '{print $1}')
+        fi
+        if [[ -z "$want_sum" ]]; then
+          bad "$tgz is not listed in SHASUMS256.txt -- is v$NODE_VERSION a real release?"
+        elif [[ "$want_sum" != "$got_sum" ]]; then
+          bad "checksum mismatch on $tgz (expected $want_sum, got $got_sum)"
+          hint "the download is corrupt or tampered with; it has not been unpacked"
+          rm -f ".toolchains/$tgz"
+        elif tar xf ".toolchains/$tgz" -C .toolchains && [[ -x "$local_node" ]]; then
+          rm -f ".toolchains/$tgz"
+          NODE_BIN="$local_node"
+          note "     unpacked; checksum verified against SHASUMS256.txt"
+        else
+          bad "could not unpack $tgz"
+        fi
+      else
+        bad "could not download Node v$NODE_VERSION from nodejs.org"
+        hint "no network? install it by hand and re-run, or use VCBENCH_NO_FETCH=1"
+      fi
+    fi
+  fi
+
   if [[ -z "$NODE_BIN" ]]; then
     have=$(command -v node >/dev/null && node -v || echo "none")
     if [[ -n "${ALLOW_NODE_MISMATCH:-}" && "$have" != "none" ]]; then
@@ -88,24 +148,47 @@ if [[ " $WANT " == *" node "* ]]; then
       note "     NOTE: not v$NODE_VERSION -- record $have in the environment table"
     else
       bad "Node.js v$NODE_VERSION not found (on PATH: $have)"
-      hint "nvm:    nvm install $NODE_VERSION"
-      hint "fnm:    fnm install $NODE_VERSION"
-      hint "volta:  volta install node@$NODE_VERSION"
+      if [[ -n "${VCBENCH_NO_FETCH:-}" ]]; then
+        hint "VCBENCH_NO_FETCH is set, so the official build was not downloaded"
+      else
+        hint "the automatic download from nodejs.org did not succeed (see above)"
+      fi
+      hint "check that v$NODE_VERSION in versions.env is a real release, or install it:"
+      hint "  nvm install $NODE_VERSION / fnm install $NODE_VERSION / volta install node@$NODE_VERSION"
+      hint "  or unpack https://nodejs.org/dist/v$NODE_VERSION/ yourself and put it on PATH"
       hint "ALLOW_NODE_MISMATCH=1 ./setup.sh    # use $have and report it instead"
     fi
   else
+    # Absolute, because npm ci runs from inside node/ and run-all.sh may be invoked
+    # from anywhere; a relative path would break in both places.
+    NODE_BIN="$(cd "$(dirname "$NODE_BIN")" && pwd)/$(basename "$NODE_BIN")"
     ok "node $("$NODE_BIN" -v)  ($NODE_BIN)"
   fi
 
   if [[ -n "$NODE_BIN" ]]; then
     pin "NODE_BIN=\"$NODE_BIN\""
     if [[ -f node/package-lock.json ]]; then
-      note "     npm ci (restoring the pinned dependency versions)"
-      if (cd node && npm ci --silent) ; then
-        ok "node/node_modules restored from package-lock.json"
+      # Run npm through the Node we just selected. The npm on PATH may belong to a
+      # different Node, and installing native modules with a mismatched ABI is the
+      # kind of thing that fails later and for no obvious reason.
+      npm_cli="$(cd "$(dirname "$NODE_BIN")/.." && pwd)/lib/node_modules/npm/bin/npm-cli.js"
+      if [[ -f "$npm_cli" ]]; then
+        npm_cmd=("$NODE_BIN" "$npm_cli")
+      elif command -v npm >/dev/null; then
+        npm_cmd=(npm)
+        note "     NOTE: using the npm on PATH ($(npm -v)); it may belong to another Node"
       else
-        bad "npm ci failed"
-        hint "try (cd node && npm ci) by hand to see the error"
+        npm_cmd=()
+        bad "no npm found next to $NODE_BIN or on PATH"
+      fi
+      if ((${#npm_cmd[@]})); then
+        note "     npm ci (restoring the pinned dependency versions)"
+        if (cd node && "${npm_cmd[@]}" ci --silent) ; then
+          ok "node/node_modules restored from package-lock.json"
+        else
+          bad "npm ci failed"
+          hint "try (cd node && ${npm_cmd[*]} ci) by hand to see the error"
+        fi
       fi
     else
       bad "node/package-lock.json missing"
@@ -236,6 +319,51 @@ if [[ " $WANT " == *" python "* ]]; then
     # Find an interpreter to build the venv from. python3 is deliberately last:
     # on Homebrew and pyenv machines it is whatever is newest, not what we want.
     base=""
+    pbs_fetch() {
+      # Fetch a relocatable CPython from python-build-standalone -- the same builds
+      # uv installs -- so that a machine with no uv, no pyenv and no distro package
+      # for this minor version can still be prepared. Needs no root: it unpacks into
+      # .toolchains/ like the Node build does.
+      local triple api name tag url dest sums want got
+      case "$(uname -s)-$(uname -m)" in
+        Linux-x86_64)  triple=x86_64-unknown-linux-gnu ;;
+        Linux-aarch64) triple=aarch64-unknown-linux-gnu ;;
+        Darwin-arm64)  triple=aarch64-apple-darwin ;;
+        Darwin-x86_64) triple=x86_64-apple-darwin ;;
+        *) return 1 ;;
+      esac
+      dest=".toolchains/cpython-$WANT_PY-$triple"
+      if [[ -x "$dest/bin/python3" ]]; then printf '%s\n' "$dest/bin/python3"; return 0; fi
+      command -v curl >/dev/null || return 1
+      api="https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest"
+      name=$(curl -fsSL --retry 2 "$api" 2>/dev/null \
+             | grep -o "\"cpython-$WANT_PY\.[0-9]*+[0-9]*-$triple-install_only\.tar\.gz\"" \
+             | head -1 | tr -d '"')
+      [[ -n "$name" ]] || return 1
+      tag=${name#*+}; tag=${tag%%-*}
+      url="https://github.com/astral-sh/python-build-standalone/releases/download/$tag/${name/+/%2B}"
+      mkdir -p .toolchains
+      note "     fetching $name (python-build-standalone)" >&2
+      curl -fsSL --retry 2 -o ".toolchains/$name" "$url" || return 1
+      # The release publishes one SHA256SUMS for all assets.
+      sums=$(curl -fsSL --retry 2 \
+        "https://github.com/astral-sh/python-build-standalone/releases/download/$tag/SHA256SUMS" 2>/dev/null)
+      want=$(printf '%s\n' "$sums" | awk -v f="$name" '$2==f{print $1; exit}')
+      if command -v sha256sum >/dev/null; then got=$(sha256sum ".toolchains/$name" | awk '{print $1}')
+      else got=$(shasum -a 256 ".toolchains/$name" | awk '{print $1}'); fi
+      if [[ -z "$want" || "$want" != "$got" ]]; then
+        note "     checksum check failed for $name; not unpacking" >&2
+        rm -f ".toolchains/$name"; return 1
+      fi
+      rm -rf "$dest.tmp"; mkdir -p "$dest.tmp"
+      tar xzf ".toolchains/$name" -C "$dest.tmp" || return 1
+      rm -f ".toolchains/$name"
+      # install_only tarballs unpack to a single "python" directory.
+      rm -rf "$dest"; mv "$dest.tmp/python" "$dest" && rm -rf "$dest.tmp"
+      [[ -x "$dest/bin/python3" ]] || return 1
+      note "     unpacked to $dest; checksum verified" >&2
+      printf '%s\n' "$dest/bin/python3"
+    }
     for cand in "python$WANT_PY" \
                 "/opt/homebrew/opt/python@$WANT_PY/bin/python$WANT_PY" \
                 "/usr/local/opt/python@$WANT_PY/bin/python$WANT_PY" \
@@ -243,22 +371,44 @@ if [[ " $WANT " == *" python "* ]]; then
                 "$HOME/.local/share/uv/python/cpython-$WANT_PY"*/bin/"python$WANT_PY" \
                 "$HOME/.local/share/uv/python/cpython-$WANT_PY"*/bin/python3 \
                 python3 python; do
-      [[ -x "$cand" ]] && { base="$cand"; break; }
-      command -v "$cand" >/dev/null 2>&1 && { base="$cand"; break; }
+      [[ -x "$cand" ]] && [[ "$(minor_of "$cand")" == "$WANT_PY" ]] && { base="$cand"; break; }
+      if command -v "$cand" >/dev/null 2>&1 && [[ "$(minor_of "$cand")" == "$WANT_PY" ]]; then
+        base="$cand"; break
+      fi
     done
+    # Nothing installed is $WANT_PY, so fetch a standalone build, the same way the
+    # Node section does. Only then fall back to complaining.
+    if [[ -z "$base" && -z "${VCBENCH_NO_FETCH:-}" ]]; then
+      base=$(pbs_fetch || true)
+    fi
     if [[ -z "$base" ]]; then
-      bad "no Python interpreter found"
-      hint "install Python $WANT_PY (the papers used 3.12.3 and 3.12.15)"
-    elif [[ "$(minor_of "$base")" != "$WANT_PY" && -z "${ALLOW_PY_MISMATCH:-}" ]]; then
-      bad "only Python $(minor_of "$base") is available ($base); the pin is $WANT_PY"
-      hint "uv (no root, any distro):  uv python install $WANT_PY"
-      hint "macOS (Homebrew):          brew install python@$WANT_PY"
-      hint "Debian/Ubuntu:             sudo apt install python$WANT_PY python$WANT_PY-venv"
-      hint "pyenv:                     pyenv install $WANT_PY && pyenv local $WANT_PY"
-      hint "ALLOW_PY_MISMATCH=1 ./setup.sh    # use $(minor_of "$base") and report it instead"
-      hint "(the interpreter version changes these benchmarks by under about 1%, but"
-      hint " the paper's environment table has to match whatever you actually run)"
-    else
+      for cand in "python3" "python"; do
+        command -v "$cand" >/dev/null 2>&1 && { have_py="$cand"; break; }
+      done
+      if [[ -n "${ALLOW_PY_MISMATCH:-}" && -n "${have_py:-}" ]]; then
+        base="$have_py"
+        note "     NOTE: $(minor_of "$base"), not $WANT_PY -- record this version with your results"
+      else
+        if [[ -n "${have_py:-}" ]]; then
+          bad "Python $WANT_PY not found (on PATH: $("$have_py" -V 2>&1))"
+        else
+          bad "no Python interpreter found at all; the pin is $WANT_PY"
+        fi
+        if [[ -n "${VCBENCH_NO_FETCH:-}" ]]; then
+          hint "VCBENCH_NO_FETCH is set, so the standalone build was not downloaded"
+        else
+          hint "the automatic download from python-build-standalone did not succeed"
+        fi
+        hint "uv:                uv python install $WANT_PY"
+        hint "macOS (Homebrew):  brew install python@$WANT_PY"
+        hint "Debian/Ubuntu:     sudo apt install python$WANT_PY python$WANT_PY-venv"
+        hint "pyenv:             pyenv install $WANT_PY && pyenv local $WANT_PY"
+        hint "ALLOW_PY_MISMATCH=1 ./setup.sh    # use what is installed and report it"
+        hint "(the interpreter version changes these benchmarks by under about 1%, but"
+        hint " the paper's environment table has to match whatever you actually run)"
+      fi
+    fi
+    if [[ -n "$base" ]]; then
       note "     creating $VENV from $base ($($base -V 2>&1))"
       if "$base" -m venv "$VENV" 2>/dev/null; then
         PY="$VENV/bin/python"
