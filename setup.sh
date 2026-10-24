@@ -324,43 +324,60 @@ if [[ " $WANT " == *" python "* ]]; then
       # uv installs -- so that a machine with no uv, no pyenv and no distro package
       # for this minor version can still be prepared. Needs no root: it unpacks into
       # .toolchains/ like the Node build does.
-      local triple api name tag url dest sums want got
+      local triple repo name tag url dest line want got why
+      why() { note "     cannot fetch a standalone Python: $1" >&2; return 1; }
       case "$(uname -s)-$(uname -m)" in
         Linux-x86_64)  triple=x86_64-unknown-linux-gnu ;;
         Linux-aarch64) triple=aarch64-unknown-linux-gnu ;;
         Darwin-arm64)  triple=aarch64-apple-darwin ;;
         Darwin-x86_64) triple=x86_64-apple-darwin ;;
-        *) return 1 ;;
+        *) why "no build is published for $(uname -s)-$(uname -m)"; return 1 ;;
       esac
       dest=".toolchains/cpython-$WANT_PY-$triple"
       if [[ -x "$dest/bin/python3" ]]; then printf '%s\n' "$dest/bin/python3"; return 0; fi
-      command -v curl >/dev/null || return 1
-      api="https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest"
-      name=$(curl -fsSL --retry 2 "$api" 2>/dev/null \
-             | grep -o "\"cpython-$WANT_PY\.[0-9]*+[0-9]*-$triple-install_only\.tar\.gz\"" \
-             | head -1 | tr -d '"')
-      [[ -n "$name" ]] || return 1
-      tag=${name#*+}; tag=${tag%%-*}
-      url="https://github.com/astral-sh/python-build-standalone/releases/download/$tag/${name/+/%2B}"
+      command -v curl >/dev/null || { why "curl is not installed"; return 1; }
+      repo="https://github.com/astral-sh/python-build-standalone"
       mkdir -p .toolchains
+
+      # Resolve the newest release from the /releases/latest redirect rather than
+      # from api.github.com: the API allows only 60 unauthenticated calls an hour
+      # per source address, which a cloud VM on a shared egress address can exhaust
+      # without anyone here doing anything.
+      if ! tag=$(curl -fsSI -o /dev/null -w '%{url_effective}' -L --retry 2 --max-time 30 \
+                   "$repo/releases/latest" 2>/dev/null); then
+        why "cannot reach github.com (HTTPS blocked, no route, or a proxy is needed)"
+        note "     try: curl -sSI -L $repo/releases/latest | head -1" >&2
+        return 1
+      fi
+      tag=${tag##*/}
+      [[ "$tag" =~ ^[0-9]{8}$ ]] || { why "unexpected redirect target '$tag' for /releases/latest"; return 1; }
+
+      # SHA256SUMS lists every asset, so one request yields both the exact filename
+      # (which embeds the patch version) and the checksum to verify it against.
+      curl -fsSL --retry 2 --max-time 60 -o .toolchains/SHA256SUMS \
+        "$repo/releases/download/$tag/SHA256SUMS" \
+        || { why "could not download SHA256SUMS for release $tag"; return 1; }
+      line=$(grep -E "  cpython-$WANT_PY\.[0-9]+\+$tag-$triple-install_only\.tar\.gz$" \
+               .toolchains/SHA256SUMS | head -1)
+      [[ -n "$line" ]] || { why "release $tag publishes no $WANT_PY build for $triple"; return 1; }
+      want=${line%% *}; name=${line##* }
+
       note "     fetching $name (python-build-standalone)" >&2
-      curl -fsSL --retry 2 -o ".toolchains/$name" "$url" || return 1
-      # The release publishes one SHA256SUMS for all assets.
-      sums=$(curl -fsSL --retry 2 \
-        "https://github.com/astral-sh/python-build-standalone/releases/download/$tag/SHA256SUMS" 2>/dev/null)
-      want=$(printf '%s\n' "$sums" | awk -v f="$name" '$2==f{print $1; exit}')
+      url="$repo/releases/download/$tag/${name/+/%2B}"
+      curl -fsSL --retry 2 --max-time 600 -o ".toolchains/$name" "$url" \
+        || { why "download failed: $url"; return 1; }
       if command -v sha256sum >/dev/null; then got=$(sha256sum ".toolchains/$name" | awk '{print $1}')
       else got=$(shasum -a 256 ".toolchains/$name" | awk '{print $1}'); fi
-      if [[ -z "$want" || "$want" != "$got" ]]; then
-        note "     checksum check failed for $name; not unpacking" >&2
-        rm -f ".toolchains/$name"; return 1
+      if [[ "$want" != "$got" ]]; then
+        rm -f ".toolchains/$name"
+        why "checksum mismatch (expected $want, got $got); not unpacking"; return 1
       fi
       rm -rf "$dest.tmp"; mkdir -p "$dest.tmp"
-      tar xzf ".toolchains/$name" -C "$dest.tmp" || return 1
+      tar xzf ".toolchains/$name" -C "$dest.tmp" || { why "could not unpack $name"; return 1; }
       rm -f ".toolchains/$name"
       # install_only tarballs unpack to a single "python" directory.
       rm -rf "$dest"; mv "$dest.tmp/python" "$dest" && rm -rf "$dest.tmp"
-      [[ -x "$dest/bin/python3" ]] || return 1
+      [[ -x "$dest/bin/python3" ]] || { why "no bin/python3 inside $name"; return 1; }
       note "     unpacked to $dest; checksum verified" >&2
       printf '%s\n' "$dest/bin/python3"
     }
