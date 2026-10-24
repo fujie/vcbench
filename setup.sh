@@ -399,10 +399,12 @@ if [[ " $WANT " == *" python "* ]]; then
         else
           hint "the automatic download from python-build-standalone did not succeed"
         fi
-        hint "uv:                uv python install $WANT_PY"
-        hint "macOS (Homebrew):  brew install python@$WANT_PY"
-        hint "Debian/Ubuntu:     sudo apt install python$WANT_PY python$WANT_PY-venv"
-        hint "pyenv:             pyenv install $WANT_PY && pyenv local $WANT_PY"
+        hint "retry with network access, or install $WANT_PY by one of:"
+        hint "  uv python install $WANT_PY"
+        hint "  pyenv install $WANT_PY && pyenv local $WANT_PY"
+        hint "  brew install python@$WANT_PY                        (macOS)"
+        hint "  sudo apt install python$WANT_PY python$WANT_PY-venv  (only where apt packages it;"
+        hint "    recent Debian/Ubuntu often ship a newer minor and have no python$WANT_PY at all)"
         hint "ALLOW_PY_MISMATCH=1 ./setup.sh    # use what is installed and report it"
         hint "(the interpreter version changes these benchmarks by under about 1%, but"
         hint " the paper's environment table has to match whatever you actually run)"
