@@ -71,7 +71,10 @@ done
   echo "go: $(go version "$GO_BENCH_BIN" 2>/dev/null | awk 'NR==1{print $NF; exit}' || true)${GOTOOLCHAIN:+ (GOTOOLCHAIN=$GOTOOLCHAIN)}${GO_BUILD_FLAGS:+ [$GO_BUILD_FLAGS]}"
   echo "python: $("$PYTHON_BIN" -V 2>&1 || echo n/a)  ($PYTHON_BIN)"
   if command -v lscpu >/dev/null; then
-    lscpu | grep -E "Model name|CPU\(s\)|MHz|Vendor" || true
+    # LC_ALL=C because the field labels are localized: on a Japanese-locale host the
+    # On-line/Off-line lines do not match an English pattern, and the core state then
+    # goes unrecorded -- which is exactly what happened to Environment B on 2026-10-24.
+    LC_ALL=C lscpu | grep -E "Model name|CPU\(s\)|MHz|Vendor|On-line|Off-line|Socket|Core\(s\)" || true
   elif command -v sysctl >/dev/null && [[ "$(uname -s)" == "Darwin" ]]; then
     # macOS has no lscpu; sysctl carries the same facts
     echo "Model name: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
