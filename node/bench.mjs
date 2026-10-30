@@ -471,7 +471,7 @@ async function runSerial() {
     vct: 'https://credentials.example.com/identity', sub: 'did:example:holder123',
     given_name: 'Taro', family_name: 'Yamada', birthdate: '1990-01-01',
   }
-  const sdHeader = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'vc+sd-jwt' })))
+  const sdHeader = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'dc+sd-jwt' })))
   bench('serial/sdjwt/encode', N, () => {
     void `${sdHeader}.${b64url(Buffer.from(JSON.stringify(sdPayload)))}.AAABBB`
   })
@@ -515,7 +515,7 @@ async function runScaling() {
     const attrs = makeAttrs(size)
     const attrEntries = Object.entries(attrs)
 
-    const sdHeader = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'vc+sd-jwt' })))
+    const sdHeader = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'dc+sd-jwt' })))
     const sdPayload = { iss: 'did:example:issuer', sub: 'did:example:sub', ...attrs }
     bench(`scaling/sdjwt/${size}`, N, () => {
       void `${sdHeader}.${b64url(Buffer.from(JSON.stringify(sdPayload)))}.SIG`
@@ -577,7 +577,7 @@ async function runSelDisc() {
         _sd: hidden.map(d => d.hash),
         ...Object.fromEntries(revealed.map(d => [d.key, attrs[d.key]])),
       }
-      const hdr = b64url('{"alg":"EdDSA","typ":"vc+sd-jwt"}')
+      const hdr = b64url('{"alg":"EdDSA","typ":"dc+sd-jwt"}')
       const pay = b64url(Buffer.from(JSON.stringify(payload)))
       void `${hdr}.${pay}.FAKESIG~${revealed.map(d => d.disclosure).join('~')}`
     })
@@ -617,7 +617,7 @@ async function runUnified() {
   // SD-JWT VC (node:crypto, same implementation level as the main benchmark, 5 attributes)
   {
     const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519')
-    const header = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'vc+sd-jwt' })))
+    const header = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'dc+sd-jwt' })))
     const payloadB64 = b64url(Buffer.from(JSON.stringify({ iss: 'did:example:issuer', sub: 'did:example:sub', ...FIELDS })))
     const sigInput = `${header}.${payloadB64}`
     bench('unified/sdjwt/sign', N, () => {
@@ -726,7 +726,7 @@ async function runE2EWith(prefix, algFor) {
     }
     const issue = () => {
       const ds = entries.map(([k, v]) => mkDisclosure(k, v))
-      const header = b64url(Buffer.from(JSON.stringify({ alg: A.jwsAlg, typ: 'vc+sd-jwt' })))
+      const header = b64url(Buffer.from(JSON.stringify({ alg: A.jwsAlg, typ: 'dc+sd-jwt' })))
       const payload = b64url(Buffer.from(JSON.stringify({
         iss: ISSUER_ID, sub: SUBJ_ID, vct: 'https://example.com/vct', iat: 1714000000,
         _sd_alg: 'sha-256', _sd: ds.map((x) => x.hash),
@@ -1167,16 +1167,16 @@ async function runSecurity() {
     }
     const payload = b64url(Buffer.from(JSON.stringify({ iss: 'https://issuer.example.com', vct: 'identity' })))
     const good = (() => {
-      const h = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'vc+sd-jwt' })))
+      const h = b64url(Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'dc+sd-jwt' })))
       return `${h}.${payload}.${b64url(crypto.sign(null, Buffer.from(`${h}.${payload}`), privateKey))}`
     })()
     try { verify(good) } catch (e) { record('sdjwt/baseline', 'FAIL', `legitimate token rejected: ${e.message}`) }
-    const none = `${b64url(Buffer.from(JSON.stringify({ alg: 'none', typ: 'vc+sd-jwt' })))}.${payload}.`
+    const none = `${b64url(Buffer.from(JSON.stringify({ alg: 'none', typ: 'dc+sd-jwt' })))}.${payload}.`
     try { verify(none); record('sdjwt/alg-none', 'ACCEPTED', 'unsigned token passed verification') }
     catch (e) { record('sdjwt/alg-none', 'REJECTED', e.message) }
     // algorithm confusion: an HMAC token whose key is the Ed25519 public key
     const pubPem = publicKey.export({ type: 'spki', format: 'pem' })
-    const h2 = b64url(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'vc+sd-jwt' })))
+    const h2 = b64url(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'dc+sd-jwt' })))
     const forged = `${h2}.${payload}.${b64url(crypto.createHmac('sha256', pubPem).update(`${h2}.${payload}`).digest())}`
     try { verify(forged); record('sdjwt/alg-confusion', 'ACCEPTED', 'HMAC token forged with the public key passed') }
     catch (e) { record('sdjwt/alg-confusion', 'REJECTED', e.message) }

@@ -82,7 +82,9 @@ def run_sdjwt():
     from cryptography.hazmat.primitives.asymmetric import ed25519
     priv = ed25519.Ed25519PrivateKey.generate()
     pub = priv.public_key()
-    header = b64url(json.dumps({'alg': 'EdDSA', 'crv': 'Ed25519'}))
+    # typ per draft-ietf-oauth-sd-jwt-vc-22 Section 3.1. crv is a JWK member,
+    # not a JWS header parameter, and alg=EdDSA already fixes the curve.
+    header = b64url(json.dumps({'alg': 'EdDSA', 'typ': 'dc+sd-jwt'}))
     payload = b64url(json.dumps({'iss': 'https://issuer.example.com',
                                  'vct': 'identity', 'sub': 'did:example:holder'}))
     sig_input = f'{header}.{payload}'.encode()

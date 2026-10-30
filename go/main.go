@@ -115,7 +115,9 @@ var vcDoc = map[string]interface{}{
 // ── SD-JWT VC (Ed25519, crypto/ed25519) ──────────────────────────
 func runSdJwt() {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	header, _ := json.Marshal(map[string]string{"alg": "EdDSA", "crv": "Ed25519"})
+	// typ per draft-ietf-oauth-sd-jwt-vc-22 Section 3.1. crv is a JWK member,
+	// not a JWS header parameter, and alg=EdDSA already fixes the curve.
+	header, _ := json.Marshal(map[string]string{"alg": "EdDSA", "typ": "dc+sd-jwt"})
 	payload, _ := json.Marshal(map[string]string{
 		"iss": "https://issuer.example.com", "vct": "identity", "sub": "did:example:holder"})
 	sigInput := []byte(b64url(header) + "." + b64url(payload))
